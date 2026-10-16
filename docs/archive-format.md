@@ -39,6 +39,7 @@ Each line is the **original Discord message object** – stickers, polls, embeds
 ## Behavior details
 
 - `messages.jsonl` is **never modified**: edits appear as full versions in `edits.jsonl`, deletions as marks in `deletes.jsonl`. History stays traceable.
+- The first run fetches the **complete** history (paged backwards in batches of 100); follow-up runs only fetch what is newer than the stored tip.
 - Pins are an index (`pins.json`); their content is already in `messages.jsonl` – unless it predates the archive, in which case it lives in `pins_backfill.jsonl`.
 - `channels.json` / `channel_info.json` / `thread_info.json` are rewritten each run (counters, status, timestamp).
 

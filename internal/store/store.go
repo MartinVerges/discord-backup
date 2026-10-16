@@ -202,6 +202,113 @@ func LastRecord(path string, parse ParseFunc) (*Record, error) {
 	return &Record{ID: id, TS: ts, Raw: cp}, nil
 }
 
+// FirstRecord returns the parsed first non-empty line, or nil if the file
+// is empty or missing. Used to find the oldest stored message for history
+// healing (one-time backfill of messages predating a truncated archive).
+func FirstRecord(path string, parse ParseFunc) (*Record, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	var frag []byte
+	buf := make([]byte, 64<<10)
+	for {
+		n, rerr := f.Read(buf)
+		if n > 0 {
+			data := append(frag, buf[:n]...)
+			frag = nil
+			lines := bytes.Split(data, []byte{'\n'})
+			frag = append([]byte(nil), lines[len(lines)-1]...)
+			for _, line := range lines[:len(lines)-1] {
+				if len(bytes.TrimSpace(line)) == 0 {
+					continue
+				}
+				id, ts, err := parse(line)
+				if err != nil {
+					continue
+				}
+				cp := append([]byte(nil), line...)
+				return &Record{ID: id, TS: ts, Raw: cp}, nil
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return nil, rerr
+		}
+	}
+	if len(bytes.TrimSpace(frag)) > 0 {
+		if id, ts, err := parse(frag); err == nil {
+			return &Record{ID: id, TS: ts, Raw: append([]byte(nil), frag...)}, nil
+		}
+	}
+	return nil, nil
+}
+
+// PrependLines inserts lines (without trailing newlines) at the front of
+// path, atomically via temp file + rename. Used once for history healing:
+// older messages fetched after the fact must go before the stored tip to
+// keep the ascending-ID invariant. Existing content is streamed, never
+// fully loaded.
+func PrependLines(path string, lines [][]byte) (int, error) {
+	if len(lines) == 0 {
+		return 0, nil
+	}
+	if err := EnsureDir(filepath.Dir(path)); err != nil {
+		return 0, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-prepend-*")
+	if err != nil {
+		return 0, err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	w := 0
+	for _, l := range lines {
+		l = bytes.TrimRight(l, "\n")
+		if len(bytes.TrimSpace(l)) == 0 {
+			continue
+		}
+		if _, err := tmp.Write(append(l, '\n')); err != nil {
+			tmp.Close()
+			return w, err
+		}
+		w++
+	}
+	if w == 0 {
+		tmp.Close()
+		return 0, nil
+	}
+	// Stream the existing file behind the new lines.
+	if src, err := os.Open(path); err == nil {
+		if _, err := io.Copy(tmp, src); err != nil {
+			src.Close()
+			tmp.Close()
+			return w, err
+		}
+		src.Close()
+	} else if !os.IsNotExist(err) {
+		tmp.Close()
+		return w, err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return w, err
+	}
+	if err := tmp.Close(); err != nil {
+		return w, err
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return w, err
+	}
+	return w, os.Rename(tmpName, path)
+}
+
 // Recent returns up to maxLines records with ts >= since, in ascending
 // order. It scans backwards and stops at the first older line, so cost is
 // proportional to the window, not the file size.

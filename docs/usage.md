@@ -22,7 +22,7 @@ The file must have mode `0600` (`chmod 600`), otherwise the tool refuses to star
 | `--channel NAME/ID` | – | Only archive these channel(s) (repeatable) |
 | `--download-attachments` | off | Store attachments locally |
 | `--include-bots` | off | Also archive bot and webhook messages |
-| `--limit N` | `0` (= unlimited) | Limit the initial backfill to the newest N messages per channel/thread |
+| `--limit N` | `0` (= unlimited) | Limit the initial backfill to the newest N messages per channel/thread (first run only; existing archives are never truncated) |
 | `--edit-window DURATION` | `48h` | Time window for edit/delete detection (`0` = new messages only) |
 | `--attach-max-mb N` | `50` | Max attachment size in MB |
 | `--attach-workers N` | `4` | Parallel attachment downloads |

@@ -313,6 +313,97 @@ func TestLimitBackfill(t *testing.T) {
 	}
 }
 
+func TestFullHistoryBeyondOnePage(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	var msgs []*fakeMsg
+	for i := 0; i < 250; i++ {
+		ts := now.Add(-time.Duration(250-i) * time.Minute)
+		msgs = append(msgs, &fakeMsg{id: msgID(ts), content: fmt.Sprintf("m%03d", i), ts: ts})
+	}
+	fake := &fakeDiscord{msgs: msgs}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	out := t.TempDir()
+
+	cfg := testCfg(t, srv.URL, out)
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	msgPath := filepath.Join(channelDir(out), "messages.jsonl")
+	if n := countLines(t, msgPath); n != 250 {
+		t.Fatalf("full history: %d lines, want 250 (must page beyond Discord's 100/page)", n)
+	}
+	// Ascending order preserved across pages.
+	recs, err := store.Recent(msgPath, now.Add(-300*time.Minute), 300, parseMsgLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 250 {
+		t.Fatalf("recent: %d records, want 250", len(recs))
+	}
+	for i := 1; i < len(recs); i++ {
+		if !discord.LessID(recs[i-1].ID, recs[i].ID) {
+			t.Fatalf("order broken at %d: %s >= %s", i, recs[i-1].ID, recs[i].ID)
+		}
+	}
+	// Rerun: stable, no duplicates.
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if n := countLines(t, msgPath); n != 250 {
+		t.Fatalf("rerun: %d lines, want 250", n)
+	}
+}
+
+func TestHealTruncatedHistory(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	var msgs []*fakeMsg
+	for i := 0; i < 250; i++ {
+		ts := now.Add(-time.Duration(250-i) * time.Minute)
+		msgs = append(msgs, &fakeMsg{id: msgID(ts), content: fmt.Sprintf("m%03d", i), ts: ts})
+	}
+	fake := &fakeDiscord{msgs: msgs}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	out := t.TempDir()
+	ctx := context.Background()
+
+	// Simulate an archive written by the buggy version: only newest 100.
+	cfg := testCfg(t, srv.URL, out)
+	cfg.Limit = 100
+	if err := Run(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	msgPath := filepath.Join(channelDir(out), "messages.jsonl")
+	if n := countLines(t, msgPath); n != 100 {
+		t.Fatalf("setup: %d lines, want 100", n)
+	}
+	// Next run without limit must heal: prepend the missing 150.
+	cfg.Limit = 0
+	if err := Run(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if n := countLines(t, msgPath); n != 250 {
+		t.Fatalf("healed: %d lines, want 250", n)
+	}
+	recs, err := store.Recent(msgPath, now.Add(-300*time.Minute), 300, parseMsgLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < len(recs); i++ {
+		if !discord.LessID(recs[i-1].ID, recs[i].ID) {
+			t.Fatalf("order broken at %d", i)
+		}
+	}
+	// Third run: stable.
+	if err := Run(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if n := countLines(t, msgPath); n != 250 {
+		t.Fatalf("stable: %d lines, want 250", n)
+	}
+}
+
 func TestThreadBackup(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	fake := &fakeDiscord{
