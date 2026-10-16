@@ -40,7 +40,8 @@ type Config struct {
 
 	IncludeBots         bool
 	ChannelFilter       []string
-	Limit               int // initial backfill cap per log (newest N); 0 = unlimited
+	Limit               int       // initial backfill cap per log (newest N); 0 = unlimited
+	Since               time.Time // first-run lower bound (zero = none); mutually exclusive with Limit
 	DownloadAttachments bool
 	EditWindow          time.Duration // 0 disables edit/delete reconciliation
 	AttachMaxBytes      int64
@@ -136,6 +137,10 @@ type Runner struct {
 	api *discord.Client
 	log *slog.Logger
 	dl  *attach.Downloader
+
+	// Attachments downloaded inline during long backfills/heals (chunked
+	// flushes), summed into the run totals at the end.
+	attOK, attSkip, attFail int
 }
 
 func (c Config) logger() *slog.Logger {
@@ -153,6 +158,9 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	if cfg.GuildID == "" {
 		return errors.New("no guild (set --guild or DISCORD_GUILD_ID)")
+	}
+	if cfg.Limit > 0 && !cfg.Since.IsZero() {
+		return errors.New("--limit and --since are mutually exclusive")
 	}
 	if err := store.EnsureDir(cfg.OutDir); err != nil {
 		return fmt.Errorf("create out dir: %w", err)
@@ -245,10 +253,15 @@ func (r *Runner) run(ctx context.Context) error {
 	}
 
 	// Download attachments after all API reads (separate CDN rate limits).
-	var attOK, attSkip, attFail int
+	// Backfills/heals already downloaded their chunks inline (see writeChunk),
+	// so an interrupted run keeps both messages and files.
+	attOK, attSkip, attFail := r.attOK, r.attSkip, r.attFail
 	if r.cfg.DownloadAttachments && len(attItems) > 0 {
 		r.log.Info("downloading attachments", "files", len(attItems))
-		attOK, attSkip, attFail = r.dl.Run(ctx, attItems)
+		ok, skip, fail := r.dl.Run(ctx, attItems)
+		attOK += ok
+		attSkip += skip
+		attFail += fail
 	}
 
 	info := ServerInfo{
@@ -608,6 +621,39 @@ type logStats struct {
 	attachments []attach.Item
 }
 
+// fetchBeat emits a heartbeat while paging so long histories don't look
+// hung: one line every beatEvery, plus a summary if it took >1 page.
+// (Suppressed under --quiet like all other info logs.)
+type fetchBeat struct {
+	log   *slog.Logger
+	label string
+	phase string
+	pages int
+	msgs  int
+	last  time.Time
+}
+
+const beatEvery = 15 * time.Second
+
+func newBeat(log *slog.Logger, label, phase string) *fetchBeat {
+	return &fetchBeat{log: log, label: label, phase: phase, last: time.Now()}
+}
+
+func (b *fetchBeat) tick(n int) {
+	b.pages++
+	b.msgs += n
+	if time.Since(b.last) >= beatEvery {
+		b.log.Info("fetching messages", "log", b.label, "phase", b.phase, "messages", b.msgs, "pages", b.pages)
+		b.last = time.Now()
+	}
+}
+
+func (b *fetchBeat) done() {
+	if b.pages > 1 {
+		b.log.Info("fetch complete", "log", b.label, "phase", b.phase, "messages", b.msgs, "pages", b.pages)
+	}
+}
+
 // parseMsgLine adapts envelopes to the store package.
 func parseMsgLine(line []byte) (string, time.Time, error) {
 	var e discord.Envelope
@@ -648,7 +694,7 @@ func (r *Runner) backupLog(ctx context.Context, dir, logID, label string) (*logS
 	// 1) Fetch messages.
 	historyMarker := filepath.Join(dir, ".history_complete")
 	if tip == nil {
-		// Fresh log: fetch the whole history (oldest to newest).
+		// Fresh log.
 		if r.cfg.Limit > 0 {
 			added, lastID, err := r.backfillNewest(ctx, dir, logID, label, r.cfg.Limit, stats)
 			if err != nil {
@@ -656,6 +702,18 @@ func (r *Runner) backupLog(ctx context.Context, dir, logID, label string) (*logS
 			}
 			stats.added = added
 			tipID = lastID
+		} else if !r.cfg.Since.IsZero() {
+			// Bounded history: page forward from the start date, appending
+			// directly. No marker: history is intentionally partial (a later
+			// run without --since heals the older part like with --limit).
+			if err := r.backfillSince(ctx, dir, logID, label, stats); err != nil {
+				return nil, err
+			}
+			if last, lerr := store.LastRecord(msgPath, parseMsgLine); lerr != nil {
+				return nil, fmt.Errorf("%s: %w", label, lerr)
+			} else if last != nil {
+				tipID = last.ID
+			}
 		} else {
 			if err := r.backfillAll(ctx, dir, logID, label, stats); err != nil {
 				return nil, err
@@ -670,6 +728,7 @@ func (r *Runner) backupLog(ctx context.Context, dir, logID, label string) (*logS
 			_ = markHistoryComplete(historyMarker)
 		}
 	} else {
+		fb := newBeat(r.log, label, "catch-up")
 		for {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -681,6 +740,7 @@ func (r *Runner) backupLog(ctx context.Context, dir, logID, label string) (*logS
 			if len(page) == 0 {
 				break
 			}
+			fb.tick(len(page))
 			sortRawAsc(page)
 			var batch [][]byte
 			for _, raw := range page {
@@ -717,11 +777,12 @@ func (r *Runner) backupLog(ctx context.Context, dir, logID, label string) (*logS
 				break
 			}
 		}
+		fb.done()
 		// One-time self-healing: archives written by versions that only
 		// fetched the newest page (100 messages) lack the marker. Fetch
 		// everything older than the stored oldest message and prepend it.
-		// Users who set --limit asked for partial history: never heal.
-		if r.cfg.Limit == 0 {
+		// Users who set --limit/--since asked for partial history: never heal.
+		if r.cfg.Limit == 0 && r.cfg.Since.IsZero() {
 			if _, merr := os.Stat(historyMarker); os.IsNotExist(merr) {
 				healed, herr := r.healHistory(ctx, dir, logID, label, msgPath, stats)
 				if herr != nil {
@@ -801,13 +862,94 @@ func (r *Runner) backfillNewest(ctx context.Context, dir, logID, label string, n
 	return len(batch), lastID, nil
 }
 
+// backfillSince fetches a fresh log forward from the --since date, appending
+// directly (no staging needed: `after` pages oldest-window-first). The start
+// date becomes a snowflake cursor, so no request is wasted on older history.
+func (r *Runner) backfillSince(ctx context.Context, dir, logID, label string, stats *logStats) error {
+	msgPath := filepath.Join(dir, "messages.jsonl")
+	after := discord.TimeSnowflake(r.cfg.Since)
+	tipID := ""
+	fb := newBeat(r.log, label, "since")
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		page, err := r.api.ListMessages(ctx, logID, after, "", 100)
+		if err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		fb.tick(len(page))
+		sortRawAsc(page)
+		var batch [][]byte
+		for _, raw := range page {
+			env, err := discord.ParseEnvelope(raw)
+			if err != nil {
+				r.log.Warn("skipping unparsable message", "log", label, "err", err)
+				continue
+			}
+			if env.IsBotLike() && !r.cfg.IncludeBots {
+				continue
+			}
+			if tipID != "" && !discord.LessID(tipID, env.ID) {
+				return fmt.Errorf("%s: API returned non-monotonic id %s after tip %s", label, env.ID, tipID)
+			}
+			line, err := discord.CompactLine(raw)
+			if err != nil {
+				return err
+			}
+			batch = append(batch, line)
+			tipID = env.ID
+			after = env.ID
+			stats.attachments = append(stats.attachments, attachItems(dir, env)...)
+		}
+		if len(batch) > 0 {
+			n, err := store.AppendLines(msgPath, batch)
+			if err != nil {
+				return fmt.Errorf("%s: append: %w", label, err)
+			}
+			stats.added += n
+		}
+		if len(page) < 100 {
+			break
+		}
+	}
+	fb.done()
+	return nil
+}
+
 // backfillAll fetches the complete history of a fresh log (oldest to
 // newest). Discord only pages newest-first (max 100 per call), so collect
-// pages backwards via `before` and append oldest-page-first. Memory is one
-// slice of raw pages; conversion + append happen page by page in reverse.
+// pages backwards via `before` and flush oldest-first in chunks: every chunk
+// is durable on disk, so an interrupted run resumes instead of restarting
+// (the next run catches up newer messages and heals older ones).
+// Memory stays bounded by flushEveryPages; only the cursor advances in RAM.
+const flushEveryPages = 50 // 50 pages x 100 messages per flush
+
 func (r *Runner) backfillAll(ctx context.Context, dir, logID, label string, stats *logStats) error {
-	var pages [][]json.RawMessage
+	msgPath := filepath.Join(dir, "messages.jsonl")
+	var buf [][]json.RawMessage
 	before := ""
+	appendMode := true
+	if fi, err := os.Stat(msgPath); err == nil && fi.Size() > 0 {
+		appendMode = false // defensive: never append onto unknown content
+	}
+	fb := newBeat(r.log, label, "backfill")
+	flush := func() error {
+		if len(buf) == 0 {
+			return nil
+		}
+		n, err := r.writeChunk(ctx, dir, msgPath, label, buf, appendMode, stats)
+		stats.added += n
+		if err != nil {
+			return err
+		}
+		appendMode = false
+		buf = nil
+		return nil
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -819,9 +961,15 @@ func (r *Runner) backfillAll(ctx context.Context, dir, logID, label string, stat
 		if len(page) == 0 {
 			break
 		}
+		fb.tick(len(page))
 		sortRawAsc(page)
-		pages = append(pages, page)
 		oldest := mustID(page[0])
+		buf = append(buf, page)
+		if len(buf) >= flushEveryPages {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
 		if oldest == "" || oldest == before {
 			break // defensive: cursor did not advance
 		}
@@ -830,10 +978,85 @@ func (r *Runner) backfillAll(ctx context.Context, dir, logID, label string, stat
 			break
 		}
 	}
-	msgPath := filepath.Join(dir, "messages.jsonl")
-	for i := len(pages) - 1; i >= 0; i-- {
-		var batch [][]byte
-		for _, raw := range pages[i] {
+	fb.done()
+	return flush()
+}
+
+// healHistory prepends messages older than the stored oldest record.
+// One-time repair for archives truncated to the newest 100 messages by
+// older versions. Flushes in chunks like backfillAll, so an interrupted
+// heal resumes on the next run (the marker is only written on success).
+// Returns the number of prepended messages.
+func (r *Runner) healHistory(ctx context.Context, dir, logID, label, msgPath string, stats *logStats) (int, error) {
+	oldest, err := store.FirstRecord(msgPath, parseMsgLine)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", label, err)
+	}
+	if oldest == nil {
+		return 0, nil
+	}
+	var buf [][]json.RawMessage
+	before := oldest.ID
+	fb := newBeat(r.log, label, "heal")
+	healed := 0
+	flush := func() error {
+		if len(buf) == 0 {
+			return nil
+		}
+		// History exists: older chunks always go in front.
+		n, err := r.writeChunk(ctx, dir, msgPath, label, buf, false, stats)
+		healed += n
+		if err != nil {
+			return err
+		}
+		buf = nil
+		return nil
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return healed, err
+		}
+		page, err := r.api.ListMessages(ctx, logID, "", before, 100)
+		if err != nil {
+			return healed, fmt.Errorf("%s: %w", label, err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		fb.tick(len(page))
+		sortRawAsc(page)
+		next := mustID(page[0])
+		buf = append(buf, page)
+		if len(buf) >= flushEveryPages {
+			if err := flush(); err != nil {
+				return healed, err
+			}
+		}
+		if next == "" || next == before {
+			break
+		}
+		before = next
+		if len(page) < 100 {
+			break
+		}
+	}
+	fb.done()
+	if err := flush(); err != nil {
+		return healed, err
+	}
+	return healed, nil
+}
+
+// writeChunk writes buffered pages (newest-first) to msgPath in ascending
+// order and returns the lines written. appendMode appends (fresh log),
+// otherwise the chunk is prepended (older history). Attachments download
+// inline when enabled, so an interrupted run keeps both messages and files;
+// otherwise items are queued for the end-of-run batch.
+func (r *Runner) writeChunk(ctx context.Context, dir, msgPath, label string, buf [][]json.RawMessage, appendMode bool, stats *logStats) (int, error) {
+	var batch [][]byte
+	var items []attach.Item
+	for i := len(buf) - 1; i >= 0; i-- {
+		for _, raw := range buf[i] {
 			env, err := discord.ParseEnvelope(raw)
 			if err != nil {
 				r.log.Warn("skipping unparsable message", "log", label, "err", err)
@@ -844,81 +1067,33 @@ func (r *Runner) backfillAll(ctx context.Context, dir, logID, label string, stat
 			}
 			line, err := discord.CompactLine(raw)
 			if err != nil {
-				return err
-			}
-			batch = append(batch, line)
-			stats.attachments = append(stats.attachments, attachItems(dir, env)...)
-		}
-		if len(batch) > 0 {
-			n, err := store.AppendLines(msgPath, batch)
-			if err != nil {
-				return fmt.Errorf("%s: append: %w", label, err)
-			}
-			stats.added += n
-		}
-	}
-	return nil
-}
-
-// healHistory prepends messages older than the stored oldest record.
-// One-time repair for archives truncated to the newest 100 messages by
-// older versions. Returns the number of prepended messages.
-func (r *Runner) healHistory(ctx context.Context, dir, logID, label, msgPath string, stats *logStats) (int, error) {
-	oldest, err := store.FirstRecord(msgPath, parseMsgLine)
-	if err != nil {
-		return 0, fmt.Errorf("%s: %w", label, err)
-	}
-	if oldest == nil {
-		return 0, nil
-	}
-	var pages [][]json.RawMessage
-	before := oldest.ID
-	for {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		page, err := r.api.ListMessages(ctx, logID, "", before, 100)
-		if err != nil {
-			return 0, fmt.Errorf("%s: %w", label, err)
-		}
-		if len(page) == 0 {
-			break
-		}
-		sortRawAsc(page)
-		pages = append(pages, page)
-		next := mustID(page[0])
-		if next == "" || next == before {
-			break
-		}
-		before = next
-		if len(page) < 100 {
-			break
-		}
-	}
-	var batch [][]byte
-	for i := len(pages) - 1; i >= 0; i-- {
-		for _, raw := range pages[i] {
-			env, err := discord.ParseEnvelope(raw)
-			if err != nil {
-				continue
-			}
-			if env.IsBotLike() && !r.cfg.IncludeBots {
-				continue
-			}
-			line, err := discord.CompactLine(raw)
-			if err != nil {
 				return 0, err
 			}
 			batch = append(batch, line)
-			stats.attachments = append(stats.attachments, attachItems(dir, env)...)
+			items = append(items, attachItems(dir, env)...)
 		}
 	}
 	if len(batch) == 0 {
 		return 0, nil
 	}
-	n, err := store.PrependLines(msgPath, batch)
+	var n int
+	var err error
+	if appendMode {
+		n, err = store.AppendLines(msgPath, batch)
+	} else {
+		n, err = store.PrependLines(msgPath, batch)
+	}
 	if err != nil {
-		return 0, fmt.Errorf("%s: prepend: %w", label, err)
+		return n, fmt.Errorf("%s: write chunk: %w", label, err)
+	}
+	if r.cfg.DownloadAttachments && len(items) > 0 {
+		r.log.Debug("downloading attachments", "log", label, "files", len(items))
+		ok, skip, fail := r.dl.Run(ctx, items)
+		r.attOK += ok
+		r.attSkip += skip
+		r.attFail += fail
+	} else {
+		stats.attachments = append(stats.attachments, items...)
 	}
 	return n, nil
 }

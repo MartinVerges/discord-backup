@@ -92,6 +92,7 @@ func run() int {
 		tokenFile    = flag.String("token-file", os.Getenv("DISCORD_TOKEN_FILE"), "file containing the bot token (or DISCORD_TOKEN_FILE)")
 		includeBots  = flag.Bool("include-bots", false, "also archive bot and webhook messages")
 		limit        = flag.Int("limit", 0, "initial backfill cap per channel/thread, newest N (0 = unlimited)")
+		sinceStr     = flag.String("since", "", "only archive messages newer than this date (RFC3339 or YYYY-MM-DD), first run only")
 		dlAttach     = flag.Bool("download-attachments", false, "download attachments to local disk")
 		editWindow   = flag.Duration("edit-window", 48*time.Hour, "re-verify recent messages for edits/deletes (0 disables)")
 		attachMaxMB  = flag.Int("attach-max-mb", 50, "max attachment size in MB")
@@ -148,6 +149,15 @@ Cron (every 15 minutes):
 		log.Error("--limit must be >= 0")
 		return 1
 	}
+	var since time.Time
+	if *sinceStr != "" {
+		var err error
+		since, err = parseSince(*sinceStr)
+		if err != nil {
+			log.Error("invalid --since", "err", err)
+			return 1
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -160,6 +170,7 @@ Cron (every 15 minutes):
 		IncludeBots:         *includeBots,
 		ChannelFilter:       []string(channels),
 		Limit:               *limit,
+		Since:               since,
 		DownloadAttachments: *dlAttach,
 		EditWindow:          *editWindow,
 		AttachMaxBytes:      int64(*attachMaxMB) << 20,
@@ -180,6 +191,18 @@ Cron (every 15 minutes):
 
 // loadToken reads the token from a file (preferred) or the environment.
 // The file must not be world-readable.
+// parseSince accepts an RFC3339 timestamp or a plain YYYY-MM-DD date
+// (midnight UTC) for --since.
+func parseSince(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("parse %q: want RFC3339 (2026-01-01T00:00:00Z) or YYYY-MM-DD", s)
+}
+
 func loadToken(path string) (string, error) {
 	if path != "" {
 		raw, err := os.ReadFile(path)

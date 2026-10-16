@@ -1,5 +1,17 @@
 # Troubleshooting
 
+## First run is slow / seems stuck on a channel
+
+Normal for large channels: the first run pages the complete history at
+Discord's maximum of 100 messages per request (there is no bigger page size
+and no jump-to-oldest in the API), sequentially and rate-limit aware. Watch
+for `fetching messages … phase=backfill` heartbeats (every 15 s) and
+`fetch complete` with page/message counts. Chunks are written to disk as they
+arrive, so Ctrl-C is safe: the next run resumes (newer messages via catch-up,
+older ones via heal) instead of starting over. To skip old history entirely,
+use `--since YYYY-MM-DD` (scans forward from that date, no paging through
+older history).
+
 ## `forbidden … Missing Access (code 50001)`
 
 The bot may not read the channel. Server Settings → Roles → bot role: enable **View Channels**

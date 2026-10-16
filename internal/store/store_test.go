@@ -135,3 +135,44 @@ func TestWriteJSONAtomic(t *testing.T) {
 		t.Fatalf("json: %q", raw)
 	}
 }
+
+func TestFirstRecordAndPrepend(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "m.jsonl")
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	mk := func(id string, h int) []byte {
+		return []byte(`{"id":"` + id + `","ts":"` + base.Add(time.Duration(h)*time.Hour).Format(time.RFC3339) + `"}`)
+	}
+	// Missing file -> nil, no error.
+	if rec, err := FirstRecord(p, parseTS); err != nil || rec != nil {
+		t.Fatalf("first on missing: %+v %v", rec, err)
+	}
+	if _, err := AppendLines(p, [][]byte{mk("3", 3), mk("4", 4)}); err != nil {
+		t.Fatal(err)
+	}
+	if rec, err := FirstRecord(p, parseTS); err != nil || rec.ID != "3" {
+		t.Fatalf("first: %+v %v", rec, err)
+	}
+	// Prepend older lines: file must stay ascending.
+	if n, err := PrependLines(p, [][]byte{mk("1", 1), mk("2", 2)}); err != nil || n != 2 {
+		t.Fatalf("prepend: n=%d err=%v", n, err)
+	}
+	got, err := Recent(p, base, 10, parseTS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("lines: %d, want 4", len(got))
+	}
+	for i, want := range []string{"1", "2", "3", "4"} {
+		if got[i].ID != want {
+			t.Fatalf("order[%d] = %s, want %s", i, got[i].ID, want)
+		}
+	}
+	if rec, err := FirstRecord(p, parseTS); err != nil || rec.ID != "1" {
+		t.Fatalf("first after prepend: %+v %v", rec, err)
+	}
+	if rec, err := LastRecord(p, parseTS); err != nil || rec.ID != "4" {
+		t.Fatalf("last after prepend: %+v %v", rec, err)
+	}
+}

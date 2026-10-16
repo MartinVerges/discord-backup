@@ -243,6 +243,11 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 		return nil
 	}
 	if err := json.Unmarshal(body, out); err != nil {
+		// Ctrl-C mid-response cuts the body: report the interrupt, not a
+		// confusing decode error.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("decode %s: %w", path, err)
 	}
 	return nil

@@ -83,20 +83,34 @@ func (f *fakeDiscord) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if limit < 1 {
 			limit = 100
 		}
-		var out []any
-		// API returns newest first.
-		for i := len(msgs) - 1; i >= 0; i-- {
-			m := msgs[i]
+		var asc []*fakeMsg
+		for _, m := range msgs {
 			if after != "" && !discord.LessID(after, m.id) {
 				continue
 			}
 			if before != "" && !discord.LessID(m.id, before) {
 				continue
 			}
-			out = append(out, f.msgJSON(id, m))
-			if len(out) >= limit {
-				break
+			asc = append(asc, m)
+		}
+		// Like the real API: `after` returns the oldest window past the
+		// cursor, `before` (or no cursor) the newest window; the array
+		// itself is ordered newest-first.
+		var window []*fakeMsg
+		if after != "" {
+			window = asc
+			if len(window) > limit {
+				window = window[:limit]
 			}
+		} else {
+			window = asc
+			if len(window) > limit {
+				window = window[len(window)-limit:]
+			}
+		}
+		var out []any
+		for i := len(window) - 1; i >= 0; i-- {
+			out = append(out, f.msgJSON(id, window[i]))
 		}
 		if out == nil {
 			out = []any{}
@@ -401,6 +415,134 @@ func TestHealTruncatedHistory(t *testing.T) {
 	}
 	if n := countLines(t, msgPath); n != 250 {
 		t.Fatalf("stable: %d lines, want 250", n)
+	}
+}
+
+func TestCatchUpPagesForward(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	fake := &fakeDiscord{msgs: []*fakeMsg{
+		{id: msgID(now.Add(-6 * time.Hour)), content: "old", ts: now.Add(-6 * time.Hour)},
+	}}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	out := t.TempDir()
+	ctx := context.Background()
+	cfg := testCfg(t, srv.URL, out)
+
+	if err := Run(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	// 250 new messages at once: catch-up must page forward (3 pages),
+	// not just take the newest 100.
+	for i := 0; i < 250; i++ {
+		ts := now.Add(-time.Duration(250-i) * time.Minute)
+		fake.msgs = append(fake.msgs, &fakeMsg{id: msgID(ts), content: fmt.Sprintf("n%03d", i), ts: ts})
+	}
+	if err := Run(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	msgPath := filepath.Join(channelDir(out), "messages.jsonl")
+	if n := countLines(t, msgPath); n != 251 {
+		t.Fatalf("catch-up: %d lines, want 251", n)
+	}
+	recs, err := store.Recent(msgPath, now.Add(-4*time.Hour), 300, parseMsgLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < len(recs); i++ {
+		if !discord.LessID(recs[i-1].ID, recs[i].ID) {
+			t.Fatalf("order broken at %d", i)
+		}
+	}
+	if err := Run(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if n := countLines(t, msgPath); n != 251 {
+		t.Fatalf("stable: %d lines, want 251", n)
+	}
+}
+
+func TestBackfillFlushesProgressively(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	var msgs []*fakeMsg
+	for i := 0; i < 6000; i++ {
+		ts := now.Add(-time.Duration(6000-i) * time.Second)
+		msgs = append(msgs, &fakeMsg{id: msgID(ts), content: fmt.Sprintf("m%04d", i), ts: ts})
+	}
+	fake := &fakeDiscord{msgs: msgs}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	out := t.TempDir()
+	ctx := context.Background()
+
+	// 60 pages > flushEveryPages: exercises mid-run chunk flushes.
+	if err := Run(ctx, testCfg(t, srv.URL, out)); err != nil {
+		t.Fatal(err)
+	}
+	msgPath := filepath.Join(channelDir(out), "messages.jsonl")
+	if n := countLines(t, msgPath); n != 6000 {
+		t.Fatalf("chunked backfill: %d lines, want 6000", n)
+	}
+	recs, err := store.Recent(msgPath, now.Add(-7000*time.Second), 7000, parseMsgLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 6000 {
+		t.Fatalf("recent: %d records, want 6000", len(recs))
+	}
+	for i := 1; i < len(recs); i++ {
+		if !discord.LessID(recs[i-1].ID, recs[i].ID) {
+			t.Fatalf("order broken at %d", i)
+		}
+	}
+	if err := Run(ctx, testCfg(t, srv.URL, out)); err != nil {
+		t.Fatal(err)
+	}
+	if n := countLines(t, msgPath); n != 6000 {
+		t.Fatalf("stable: %d lines, want 6000", n)
+	}
+}
+
+func TestSinceBackfill(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	var msgs []*fakeMsg
+	for i := 0; i < 10; i++ {
+		ts := now.Add(-time.Duration(10-i) * time.Hour)
+		msgs = append(msgs, &fakeMsg{id: msgID(ts), content: fmt.Sprintf("m%d", i), ts: ts})
+	}
+	fake := &fakeDiscord{msgs: msgs}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	out := t.TempDir()
+	ctx := context.Background()
+
+	cfg := testCfg(t, srv.URL, out)
+	cfg.Since = now.Add(-5*time.Hour - time.Minute)
+	if err := Run(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	msgPath := filepath.Join(channelDir(out), "messages.jsonl")
+	// Only messages from -5h..-1h (m5..m9).
+	if n := countLines(t, msgPath); n != 5 {
+		t.Fatalf("since backfill: %d lines, want 5", n)
+	}
+	recs, err := store.Recent(msgPath, now.Add(-11*time.Hour), 10, parseMsgLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, r := range recs {
+		var e discord.Envelope
+		_ = json.Unmarshal(r.Raw, &e)
+		if want := fmt.Sprintf("m%d", i+5); e.Content != want {
+			t.Fatalf("content[%d] = %q, want %q", i, e.Content, want)
+		}
+	}
+	// Rerun without --since heals the older half (no marker was written).
+	if err := Run(ctx, testCfg(t, srv.URL, out)); err != nil {
+		t.Fatal(err)
+	}
+	if n := countLines(t, msgPath); n != 10 {
+		t.Fatalf("healed: %d lines, want 10", n)
 	}
 }
 
