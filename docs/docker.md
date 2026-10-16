@@ -11,7 +11,7 @@ docker run --rm \
   ghcr.io/martinverges/discord-backup:latest --guild YOUR_SERVER_ID --out /data --download-attachments
 ```
 
-No release yet or want to build yourself? Minimal image (~12 MB): static Go binary on
+No release yet or want to build yourself? Minimal image (~16 MB): static Go binary on
 distroless (Debian 13), running as non-root (uid 65532).
 The tool is a one-shot cron job, so the container runs one sync per invocation – schedule it
 from the host (cron/systemd), don't keep it running.
