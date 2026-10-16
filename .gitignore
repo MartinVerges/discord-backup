@@ -1,0 +1,23 @@
+# Build output
+/discord-backup
+/discord-backup.exe
+
+# Local archives and test data (never commit)
+/discord_archive/
+/archive/
+*.log
+
+# Secrets (never commit)
+.token
+*.token
+DISCORD_TOKEN*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Token
+.token
+/archive/
+

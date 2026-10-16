@@ -1,0 +1,8 @@
+.git
+archive/
+discord_archive/
+discord-backup
+discord-backup-*
+.token
+*.token
+*.log
