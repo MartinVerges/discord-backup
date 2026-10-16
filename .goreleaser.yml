@@ -35,11 +35,11 @@ changelog:
   sort: asc
   use: github
 
-# Container image, pushed to ghcr.io alongside the release.
+# Container image for the version tag (:vX.Y.Z).
+# :latest is published separately from every main commit (docker.yml).
 dockers:
   - image_templates:
       - "ghcr.io/martinverges/discord-backup:{{ .Tag }}"
-      - "ghcr.io/martinverges/discord-backup:latest"
     dockerfile: Dockerfile
     use: buildx
     build_flag_templates:

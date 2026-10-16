@@ -1,6 +1,9 @@
 # Docker
 
-Prebuilt image (amd64 + arm64), published automatically with every release:
+Prebuilt images (amd64 + arm64):
+
+- `ghcr.io/martinverges/discord-backup:latest` – built from every `main` commit
+- `ghcr.io/martinverges/discord-backup:v0.1.0` – stable releases (binaries also on the Releases page)
 
 ```bash
 docker pull ghcr.io/martinverges/discord-backup:latest
