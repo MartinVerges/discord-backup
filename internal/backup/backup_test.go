@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"discord-backup/internal/attach"
 	"discord-backup/internal/discord"
 	"discord-backup/internal/store"
 )
@@ -543,6 +544,60 @@ func TestSinceBackfill(t *testing.T) {
 	}
 	if n := countLines(t, msgPath); n != 10 {
 		t.Fatalf("healed: %d lines, want 10", n)
+	}
+}
+
+func TestMissingInLog(t *testing.T) {
+	dir := t.TempDir()
+	msg := func(id, attID, file string) []byte {
+		m := map[string]any{
+			"id": "M" + id, "channel_id": "C", "content": "hi",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"author":    map[string]any{"id": "U1", "username": "alice"},
+		}
+		if attID != "" {
+			m["attachments"] = []any{map[string]any{
+				"id": attID, "filename": file, "size": 10,
+				"url": "https://cdn.discordapp.com/attachments/1/" + file,
+			}}
+		} else {
+			m["attachments"] = []any{}
+		}
+		raw, _ := json.Marshal(m)
+		return raw
+	}
+	p := filepath.Join(dir, "messages.jsonl")
+	lines := [][]byte{msg("1", "A1", "one.png"), msg("2", "", ""), msg("3", "A3", "three.png"), []byte("not json")}
+	if _, err := store.AppendLines(p, lines); err != nil {
+		t.Fatal(err)
+	}
+	// "one.png" already on disk -> only "three.png" is missing.
+	// Unreadable lines are skipped, messages without attachments ignored.
+	existing := filepath.Join(dir, "attachments")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	name1 := attach.DestName("M1", "A1", "one.png")
+	if err := os.WriteFile(filepath.Join(existing, name1), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items, n, err := missingInLog(p, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Fatalf("scanned %d messages, want 3", n)
+	}
+	if len(items) != 1 {
+		t.Fatalf("missing %d items, want 1", len(items))
+	}
+	if items[0].MessageID != "M3" || items[0].AttachmentID != "A3" {
+		t.Fatalf("wrong item: %+v", items[0])
+	}
+	// Missing file -> no items, message count 0, no error.
+	items, n, err = missingInLog(filepath.Join(dir, "edits.jsonl"), dir)
+	if err != nil || len(items) != 0 || n != 0 {
+		t.Fatalf("missing file: items=%d n=%d err=%v", len(items), n, err)
 	}
 }
 

@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -133,6 +134,31 @@ func TestWriteJSONAtomic(t *testing.T) {
 	}
 	if string(raw) != "{\n  \"a\": \"b\"\n}\n" {
 		t.Fatalf("json: %q", raw)
+	}
+}
+
+func TestForEachLine(t *testing.T) {
+	dir := t.TempDir()
+	// Missing file: no error, no calls.
+	called := 0
+	if err := ForEachLine(filepath.Join(dir, "nope.jsonl"), func([]byte) error { called++; return nil }); err != nil || called != 0 {
+		t.Fatalf("missing: called=%d err=%v", called, err)
+	}
+	p := filepath.Join(dir, "m.jsonl")
+	// No trailing newline on the last line: still delivered. Blank lines skipped.
+	if err := os.WriteFile(p, []byte("{\"a\":1}\n\n{\"b\":2}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	if err := ForEachLine(p, func(l []byte) error { got = append(got, string(l)); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != `{"a":1}` || got[1] != `{"b":2}` {
+		t.Fatalf("lines: %q", got)
+	}
+	// Callback error aborts.
+	if err := ForEachLine(p, func([]byte) error { return errors.New("boom") }); err == nil {
+		t.Fatal("want callback error")
 	}
 }
 

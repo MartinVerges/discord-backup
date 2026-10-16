@@ -21,6 +21,7 @@ The file must have mode `0600` (`chmod 600`), otherwise the tool refuses to star
 | `--out DIR` | `ARCHIVE_PATH` / `./discord_archive` | Destination directory |
 | `--channel NAME/ID` | – | Only archive these channel(s) (repeatable) |
 | `--download-attachments` | off | Store attachments locally |
+| `--backfill-attachments` | off | Download attachments missing on disk for already archived messages (implies download; message data untouched) |
 | `--include-bots` | off | Also archive bot and webhook messages |
 | `--limit N` | `0` (= unlimited) | Limit the initial backfill to the newest N messages per channel/thread (first run only; existing archives are never truncated) |
 | `--since DATE` | – | Only archive messages newer than this date (`YYYY-MM-DD` or RFC3339), first run only; mutually exclusive with `--limit` |
@@ -48,6 +49,9 @@ discord-backup --guild 123 --channel general --limit 100 --edit-window 0
 
 # Only archive messages from 2026 on (first run scans forward from that date)
 discord-backup --guild 123 --since 2026-01-01
+
+# Fetch attachments missed earlier (e.g. old size cap, or archived before --download-attachments)
+discord-backup --guild 123 --backfill-attachments
 
 # Include bots (backfilled retroactively, without duplicates)
 discord-backup --guild 123 --include-bots

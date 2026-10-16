@@ -10,6 +10,7 @@
 package store
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -382,6 +383,36 @@ func Recent(path string, since time.Time, maxLines int, parse ParseFunc) ([]Reco
 		out[i], out[j] = out[j], out[i]
 	}
 	return out, nil
+}
+
+// ForEachLine streams a JSONL file line by line (constant memory, handles
+// arbitrarily long lines) and calls fn for every non-empty line. A missing
+// file is not an error. A final line without trailing newline is still
+// delivered.
+func ForEachLine(path string, fn func(line []byte) error) error {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	br := bufio.NewReaderSize(f, 1<<20)
+	for {
+		line, rerr := br.ReadBytes('\n')
+		if len(bytes.TrimSpace(line)) > 0 {
+			if ferr := fn(bytes.TrimRight(line, "\n")); ferr != nil {
+				return ferr
+			}
+		}
+		if rerr == io.EOF {
+			return nil
+		}
+		if rerr != nil {
+			return rerr
+		}
+	}
 }
 
 // AllIDs streams the whole file and returns the set of record IDs.

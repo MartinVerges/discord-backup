@@ -42,6 +42,7 @@ type Config struct {
 	ChannelFilter       []string
 	Limit               int       // initial backfill cap per log (newest N); 0 = unlimited
 	Since               time.Time // first-run lower bound (zero = none); mutually exclusive with Limit
+	BackfillAttachments bool      // one-shot: download attachments missing on disk for stored messages
 	DownloadAttachments bool
 	EditWindow          time.Duration // 0 disables edit/delete reconciliation
 	AttachMaxBytes      int64
@@ -186,6 +187,9 @@ func Run(ctx context.Context, cfg Config) error {
 			Log:      log,
 		},
 	}
+	if r.cfg.BackfillAttachments {
+		r.cfg.DownloadAttachments = true // backfill implies downloading
+	}
 	return r.run(ctx)
 }
 
@@ -262,6 +266,13 @@ func (r *Runner) run(ctx context.Context) error {
 		attOK += ok
 		attSkip += skip
 		attFail += fail
+	}
+	if r.cfg.BackfillAttachments {
+		r.log.Info("backfilling missing attachments")
+		bok, bskip, bfail := r.backfillAttachments(ctx, serverDir)
+		attOK += bok
+		attSkip += bskip
+		attFail += bfail
 	}
 
 	info := ServerInfo{
@@ -1308,6 +1319,83 @@ func attachItems(dir string, env *discord.Envelope) []attach.Item {
 		})
 	}
 	return out
+}
+
+// backfillAttachments scans every stored log (channels and threads) for
+// attachments missing on disk – e.g. archived before --download-attachments
+// was enabled, or skipped by an older size cap – and downloads them.
+// Message data is never modified. Returns (new, cached, failed).
+func (r *Runner) backfillAttachments(ctx context.Context, serverDir string) (ok, skipped, failed int) {
+	var missing []attach.Item
+	var files, msgs int
+	scan := func(dir, what string) {
+		for _, name := range []string{"messages.jsonl", "pins_backfill.jsonl", "edits.jsonl"} {
+			items, n, err := missingInLog(filepath.Join(dir, name), dir)
+			if err != nil {
+				r.log.Warn("backfill scan failed, continuing", "log", what, "file", name, "err", err)
+				continue
+			}
+			files++
+			msgs += n
+			missing = append(missing, items...)
+		}
+	}
+	entries, err := os.ReadDir(serverDir)
+	if err != nil {
+		r.log.Warn("backfill scan failed", "err", err)
+		return 0, 0, 0
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "channel_") {
+			continue
+		}
+		cdir := filepath.Join(serverDir, e.Name())
+		scan(cdir, e.Name())
+		tentries, err := os.ReadDir(filepath.Join(cdir, "threads"))
+		if err != nil {
+			continue // no threads, or unreadable: not fatal
+		}
+		for _, t := range tentries {
+			if !t.IsDir() {
+				continue
+			}
+			scan(filepath.Join(cdir, "threads", t.Name()), t.Name())
+		}
+	}
+	r.log.Info("backfill scan complete", "files", files, "messages", msgs, "missing", len(missing))
+	if len(missing) == 0 {
+		return 0, 0, 0
+	}
+	if err := ctx.Err(); err != nil {
+		r.log.Warn("backfill download skipped, interrupted")
+		return 0, 0, 0
+	}
+	return r.dl.Run(ctx, missing)
+}
+
+// missingInLog returns download items for attachments referenced in a stored
+// log file but absent on disk, plus the number of messages scanned.
+func missingInLog(path, dir string) ([]attach.Item, int, error) {
+	var out []attach.Item
+	msgs := 0
+	err := store.ForEachLine(path, func(line []byte) error {
+		env, err := discord.ParseEnvelope(line)
+		if err != nil {
+			return nil // skip unreadable lines, never abort the scan
+		}
+		msgs++
+		for _, it := range attachItems(dir, env) {
+			dest := filepath.Join(it.DestDir, attach.DestName(it.MessageID, it.AttachmentID, it.Filename))
+			if _, err := os.Stat(dest); err == nil {
+				continue
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+			out = append(out, it)
+		}
+		return nil
+	})
+	return out, msgs, err
 }
 
 // --- pins ------------------------------------------------------------------

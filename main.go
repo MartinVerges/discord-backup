@@ -94,6 +94,7 @@ func run() int {
 		limit        = flag.Int("limit", 0, "initial backfill cap per channel/thread, newest N (0 = unlimited)")
 		sinceStr     = flag.String("since", "", "only archive messages newer than this date (RFC3339 or YYYY-MM-DD), first run only")
 		dlAttach     = flag.Bool("download-attachments", false, "download attachments to local disk")
+		backfillAtt  = flag.Bool("backfill-attachments", false, "download attachments missing on disk for already archived messages (implies download)")
 		editWindow   = flag.Duration("edit-window", 48*time.Hour, "re-verify recent messages for edits/deletes (0 disables)")
 		attachMaxMB  = flag.Int("attach-max-mb", 50, "max attachment size in MB")
 		attachWorker = flag.Int("attach-workers", 4, "parallel attachment downloads")
@@ -171,6 +172,7 @@ Cron (every 15 minutes):
 		ChannelFilter:       []string(channels),
 		Limit:               *limit,
 		Since:               since,
+		BackfillAttachments: *backfillAtt,
 		DownloadAttachments: *dlAttach,
 		EditWindow:          *editWindow,
 		AttachMaxBytes:      int64(*attachMaxMB) << 20,
