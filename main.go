@@ -27,6 +27,10 @@ type strList []string
 func (s *strList) String() string     { return strings.Join(*s, ",") }
 func (s *strList) Set(v string) error { *s = append(*s, v); return nil }
 
+// version is stamped in by GoReleaser (ldflags -X main.version=...).
+// Local builds report "dev".
+var version = "dev"
+
 func main() {
 	os.Exit(run())
 }
@@ -95,6 +99,7 @@ func run() int {
 		skipEmpty    = flag.Bool("skip-empty", true, "skip channels with no access or zero messages")
 		listCh       = flag.Bool("list-channels", false, "list backup-relevant channels and exit")
 		quiet        = flag.Bool("quiet", false, "only warnings and errors")
+		showVersion  = flag.Bool("version", false, "print version and exit")
 	)
 	var channels strList
 	flag.Var(&channels, "channel", "only archive this channel (name or ID); repeatable")
@@ -122,6 +127,11 @@ Cron (every 15 minutes):
 `)
 	}
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return 0
+	}
 
 	level := slog.LevelInfo
 	if *quiet {

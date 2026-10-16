@@ -49,6 +49,16 @@ time=... level=INFO msg="channel done" channel=#random new=0 edits=0 deleted=0 t
 time=... level=INFO msg=done channels=75 attachments_new=12 attachments_cached=340 attachments_failed=0
 ```
 
+## Docker
+
+```bash
+docker pull ghcr.io/martinverges/discord-backup:latest
+docker run --rm --env-file .env -v "$PWD/archive:/data" \
+  ghcr.io/martinverges/discord-backup:latest --guild YOUR_SERVER_ID --out /data --download-attachments
+```
+
+Details: [docs/docker.md](docs/docker.md). A new image is published automatically with every `v*` release.
+
 ## License
 
 MIT License – Copyright (c) 2026 Martin Verges. See [LICENSE](LICENSE).

@@ -1,6 +1,18 @@
 # Docker
 
-Minimal image (~12 MB): static Go binary on distroless, running as non-root (uid 65532).
+Prebuilt image (amd64 + arm64), published automatically with every release:
+
+```bash
+docker pull ghcr.io/martinverges/discord-backup:latest
+
+docker run --rm \
+  --env-file .env \
+  -v "$PWD/archive:/data" \
+  ghcr.io/martinverges/discord-backup:latest --guild YOUR_SERVER_ID --out /data --download-attachments
+```
+
+No release yet or want to build yourself? Minimal image (~12 MB): static Go binary on
+distroless (Debian 13), running as non-root (uid 65532).
 The tool is a one-shot cron job, so the container runs one sync per invocation – schedule it
 from the host (cron/systemd), don't keep it running.
 

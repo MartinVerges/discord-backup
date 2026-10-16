@@ -28,6 +28,7 @@ The file must have mode `0600` (`chmod 600`), otherwise the tool refuses to star
 | `--attach-workers N` | `4` | Parallel attachment downloads |
 | `--skip-empty` | on | Skip channels with no access or zero messages |
 | `--list-channels` | off | Show channels as a table and exit |
+| `--version` | off | Print version and exit |
 | `--quiet` | off | Only log warnings and errors |
 
 Durations like `48h`, `24h`, `30m`, `0` are accepted.

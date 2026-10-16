@@ -1,0 +1,47 @@
+# GoReleaser: binaries + checksums + container image, on every v* tag.
+# Release with: git tag v0.1.0 && git push origin v0.1.0
+version: 2
+
+project_name: discord-backup
+
+builds:
+  - id: discord-backup
+    main: .
+    binary: discord-backup
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - docs/**
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  use: github
+
+# Container image, pushed to ghcr.io alongside the release.
+dockers:
+  - image_templates:
+      - "ghcr.io/martinverges/discord-backup:{{ .Tag }}"
+      - "ghcr.io/martinverges/discord-backup:latest"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--pull"
+      - "--platform=linux/amd64,linux/arm64"
