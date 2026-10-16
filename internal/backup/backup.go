@@ -443,6 +443,7 @@ func (r *Runner) backupChannel(ctx context.Context, serverDir string, ch discord
 	if ch.ParentID != nil {
 		cat = cats[*ch.ParentID]
 	}
+	log.Info("channel start", "type", channelTypeName(ch.Type), "category", cat)
 
 	// Previous counts (or adopt foreign files once by counting lines).
 	var prevMsg, prevEdit, prevDel int64

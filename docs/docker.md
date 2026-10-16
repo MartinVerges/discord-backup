@@ -1,9 +1,12 @@
 # Docker
 
-Prebuilt images (amd64 + arm64):
+Prebuilt images (amd64 + arm64), published by the Docker workflow:
 
 - `ghcr.io/martinverges/discord-backup:latest` – built from every `main` commit
-- `ghcr.io/martinverges/discord-backup:v0.1.0` – stable releases (binaries also on the Releases page)
+- `ghcr.io/martinverges/discord-backup:v0.1.0` – built from the `v0.1.0` tag
+
+(Binaries for Linux/macOS/Windows live on the Releases page; the Release
+workflow builds those, images are published separately.)
 
 ```bash
 docker pull ghcr.io/martinverges/discord-backup:latest

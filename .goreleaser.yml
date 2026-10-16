@@ -35,13 +35,7 @@ changelog:
   sort: asc
   use: github
 
-# Container image for the version tag (:vX.Y.Z).
-# :latest is published separately from every main commit (docker.yml).
-dockers:
-  - image_templates:
-      - "ghcr.io/martinverges/discord-backup:{{ .Tag }}"
-    dockerfile: Dockerfile
-    use: buildx
-    build_flag_templates:
-      - "--pull"
-      - "--platform=linux/amd64,linux/arm64"
+# Container images are NOT built here: the deprecated `dockers` block cannot
+# push multi-arch manifests ("docker exporter does not support exporting
+# manifest lists"). Tags (:latest from main, :vX.Y.Z from tags) are published
+# by .github/workflows/docker.yml with the same Dockerfile instead.

@@ -1,11 +1,17 @@
 name: Docker
 
-# Publishes :latest from every main commit (amd64 + arm64).
-# Versioned tags (:v0.1.0) come from the Release workflow instead.
+# Publishes multi-arch images (amd64 + arm64) to ghcr.io:
+#   - every main commit  -> :latest
+#   - every version tag  -> :vX.Y.Z (e.g. :v0.1.0)
+# Image publishing lives here (not in GoReleaser): the same Dockerfile is
+# used for both, and plain docker/build-push-action handles manifest lists
+# correctly.
 on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
 
 permissions:
   contents: read
@@ -22,9 +28,17 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/martinverges/discord-backup
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/martinverges/discord-backup:latest
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
