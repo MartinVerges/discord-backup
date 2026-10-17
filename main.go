@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -57,18 +58,23 @@ func runHealthcheck(args []string) int {
 	fs.SetOutput(os.Stderr)
 	configPath := fs.String("config", "", "configuration file; the endpoint comes from mcp.http_addr")
 	url := fs.String("url", "", "health endpoint to probe (overrides --config)")
+	principal := fs.String("principal", "", "also make an authenticated MCP call as this principal (\"auto\" = any with a token)")
 	timeout := fs.Duration("timeout", 3*time.Second, "request timeout")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, `discord-backup healthcheck: exit 0 when the MCP HTTP endpoint answers.
 
 Usage:
   discord-backup healthcheck --config /etc/discord-backup.json
+  discord-backup healthcheck --config /etc/discord-backup.json --principal auto
   discord-backup healthcheck --url http://127.0.0.1:8765/healthz
 
 Options:
   --config PATH    configuration file; probes http://<mcp.http_addr>/healthz
                    (also fails when the config itself is invalid)
   --url URL        health endpoint to probe (default http://127.0.0.1:8765/healthz)
+  --principal P    additionally do a real MCP call (initialize, tools/list,
+                   whoami) with P's bearer token: proves auth, archive and
+                   permissions. One round trip, nothing is changed.
   --timeout dur    request timeout (default 3s)
 `)
 	}
@@ -78,6 +84,7 @@ Options:
 		}
 		return 2
 	}
+	var base string
 	target := *url
 	if target == "" {
 		addr := "127.0.0.1:8765"
@@ -91,18 +98,55 @@ Options:
 				addr = opts.MCP.HTTPAddr
 			}
 		}
-		target = "http://" + probeAddr(addr) + "/healthz"
+		base = "http://" + probeAddr(addr)
+		target = base + "/healthz"
+	} else if u, err := neturl.Parse(target); err == nil && u.Host != "" {
+		base = u.Scheme + "://" + u.Host
+	} else {
+		base = strings.TrimSuffix(target, "/healthz")
 	}
-	resp, err := (&http.Client{Timeout: *timeout}).Get(target)
+
+	client := &http.Client{Timeout: *timeout}
+	resp, err := client.Get(target)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
 		return 1
 	}
-	defer resp.Body.Close()
+	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(os.Stderr, "healthcheck: %s\n", resp.Status)
 		return 1
 	}
+	if *principal == "" {
+		return 0
+	}
+
+	// The authenticated round trip: the part that says whether the server can
+	// actually serve this identity, not just whether the port is open.
+	if *configPath == "" {
+		fmt.Fprintln(os.Stderr, "healthcheck: --principal needs --config to look up the token")
+		return 2
+	}
+	opts, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
+		return 1
+	}
+	pr, err := pickPrincipal(opts.MCP.Principals, *principal)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
+		return 1
+	}
+	if strings.TrimSpace(pr.Token) == "" {
+		fmt.Fprintf(os.Stderr, "healthcheck: principal %q has no \"token\" in the config; the http transport needs one\n", pr.Name)
+		return 1
+	}
+	result, err := mcpSmoke(client, base, pr.Token)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
+		return 1
+	}
+	printMCPCheck(os.Stdout, base, result)
 	return 0
 }
 
@@ -213,6 +257,11 @@ waits 15m after each pass, then backs up again.
 	every := opts.Backup.Every
 	if every <= 0 {
 		if err := backup.Run(ctx, cfg); err != nil {
+			if errors.Is(err, backup.ErrAnotherRunActive) {
+				// Not a failure: the previous run is still working.
+				log.Info("another backup run is active, exiting")
+				return 0
+			}
 			if ctx.Err() != nil {
 				log.Error("interrupted")
 				return 130
@@ -229,14 +278,22 @@ waits 15m after each pass, then backs up again.
 	// Discord outage cannot stop the schedule.
 	log.Info("running as a service", "every", every.String(), "archive", opts.ArchiveDir)
 	for {
-		if err := backup.Run(ctx, cfg); err != nil {
+		wait := every
+		switch err := backup.Run(ctx, cfg); {
+		case err == nil:
+		case errors.Is(err, backup.ErrAnotherRunActive):
+			// Someone else holds the archive. Do not sit idle for the whole
+			// interval: they are working right now, so check back soon.
+			wait = lockRetry(every)
+			log.Info(err.Error(), "retry_in", wait.String())
+		default:
 			if ctx.Err() != nil {
 				log.Info("stopping")
 				return 0
 			}
 			log.Error("backup failed", "err", err, "retry_in", every.String())
 		}
-		t := time.NewTimer(every)
+		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			t.Stop()
@@ -245,6 +302,50 @@ waits 15m after each pass, then backs up again.
 		case <-t.C:
 		}
 	}
+}
+
+// lockRetryCap bounds how long a busy archive is left alone. An overlapping run
+// usually finishes in seconds, so waiting the whole interval (which may be
+// hours) would silently stall the schedule.
+const lockRetryCap = time.Minute
+
+// lockRetry is how long to wait before re-checking a busy lock.
+func lockRetry(every time.Duration) time.Duration {
+	if every <= 0 || every > lockRetryCap {
+		return lockRetryCap
+	}
+	return every
+}
+
+// inContainer reports whether we are very likely inside a container, where a
+// loopback bind cannot be reached through a published port.
+func inContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/run/.containerenv"); err == nil { // podman
+		return true
+	}
+	raw, err := os.ReadFile("/proc/1/cgroup")
+	if err != nil {
+		return false
+	}
+	s := string(raw)
+	return strings.Contains(s, "docker") || strings.Contains(s, "kubepods") || strings.Contains(s, "containerd")
+}
+
+// isLoopbackAddr reports whether a listen address only accepts connections from
+// inside its own network namespace (so a published port cannot reach it).
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" { // wildcard: reachable
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 // runMCP runs the read-only, permission-scoped MCP server off the same config
@@ -340,6 +441,11 @@ is the offline fallback when Discord is unreachable. The listen address for
 		if withToken == 0 {
 			log.Error(`the http transport needs at least one principal with a "token"`)
 			return 1
+		}
+		if isLoopbackAddr(listen) && inContainer() {
+			log.Warn("listening on loopback inside a container: a published port on the host cannot reach it",
+				"addr", listen,
+				"fix", `set "mcp.http_addr" to "0.0.0.0:8765" and publish it on the host as "127.0.0.1:8765:8765"`)
 		}
 		if err := srv.ServeHTTP(ctx, listen, log); err != nil {
 			log.Error("http server", "err", err)

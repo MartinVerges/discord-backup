@@ -5,7 +5,9 @@
 #     #   "archive_dir": "/data"        (container path!)
 #     #   "token": "<bot token>"
 #     #   "backup": {"every": "15m"}    (self-scheduling, no cron needed)
-#     #   "mcp": {...}                  (principals + their bearer tokens)
+#     #   "mcp": {"http_addr": "0.0.0.0:8765",   <-- 0.0.0.0, NOT 127.0.0.1!
+#     #           "principals": [...]}           (loopback in the container is
+#     #                                           unreachable from the host)
 #   chmod 600 config.json               # it holds tokens
 #   mkdir -p archive
 #   sudo chown 65532:65532 config.json archive   # image runs as 65532:65532

@@ -176,7 +176,10 @@ discord-backup mcp --config config.json --http
   without a valid token get `401`.
 
 The listen address is `mcp.http_addr` (default `127.0.0.1:8765`). Bind to
-`127.0.0.1` unless you put a TLS reverse proxy in front.
+`127.0.0.1` unless you put a TLS reverse proxy in front – **except in a
+container**, where loopback is unreachable through a published port: use
+`0.0.0.0:8765` there and publish the port on the host as `127.0.0.1:8765:8765`
+(see [docker.md](docker.md#host-vs-container-address)).
 
 #### Healthcheck
 
@@ -185,6 +188,25 @@ The listen address is `mcp.http_addr` (default `127.0.0.1:8765`). Bind to
 (a wildcard address like `0.0.0.0:8765` is probed on loopback). Use it where
 there is no shell or `curl` (notably the distroless image); `--url` overrides
 the derived endpoint. See [docker.md](docker.md).
+
+Add `--principal` and it stops being a ping and becomes a real MCP check:
+
+```bash
+discord-backup healthcheck --config /etc/discord-backup.json --principal auto
+```
+
+It sends `initialize`, `tools/list` and a `whoami` call with that principal's
+bearer token and prints what came back (server version, tool list, identity,
+how many channels/threads/messages that identity may see). Everything read-only,
+one round trip - the fast way to tell "port open" from "actually serving me".
+`auto` picks any principal with a token; a name/email/alias/`discord_id` picks
+one. Without `curl` on the host, this is also the easiest probe from inside a
+container:
+
+```bash
+docker compose exec mcp /usr/local/bin/discord-backup \
+  healthcheck --config /etc/discord-backup.json --principal auto
+```
 
 ### Flags
 

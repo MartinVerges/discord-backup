@@ -24,6 +24,9 @@ discord-backup --config /etc/discord-backup.json
 
 - Passes never overlap: the wait starts when the pass ends.
 - A failing pass does not end the loop; it is retried on the next tick.
+- If another run holds the archive (a second container, a cron job, a manual
+  run), the service does not go quiet for the whole interval: it re-checks after
+  at most a minute and picks the work up as soon as the lock is free.
 - `SIGINT`/`SIGTERM` stops it cleanly (exit `0`) – right for `docker stop`,
   `systemd` `Type=simple`, or a plain foreground run.
 - Not combinable with `--list-channels` (that always exits).

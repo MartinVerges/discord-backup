@@ -27,16 +27,57 @@ Enable the **Message Content Intent** in the Developer Portal (Bot → Privilege
 Older versions used the per-channel endpoint, which answers 404 on API v10. Current versions use
 the guild endpoint – just rebuild (`go build`).
 
-## `another backup run is active`
-
-Not an error: the previous run is still working. The cron run exits cleanly and the next one
-catches up. If the message persists, a process is stuck (`ps aux | grep discord-backup`).
-
 ## Token errors
 
 - `no bot token: set "token" in config.json`: add the token to the config.
 - `config … holds tokens and must not be group/world accessible`: `chmod 600 config.json`.
 - `401 Unauthorized`: token wrong/expired → regenerate via **Reset Token** in the portal.
+
+## `another backup run is active`
+
+Not an error: another process holds the archive (a second container, a cron run,
+a manual run). A one-shot run exits `0`; a service (`backup.every`) waits at most
+a minute and retries, so it picks the work up by itself. If it never stops:
+
+```bash
+sudo lsof "/path/to/archive/.lock"      # which process holds it
+docker ps --format '{{.Names}}\t{{.Status}}' | grep -i backup
+```
+
+The pid in the message is the holder's pid *inside its own namespace* – `1`
+usually means "another container". A stale lock file needs no cleanup (it is an
+OS lock: a dead process releases it), but deleting `<archive_dir>/.lock` is
+harmless if you want to be sure.
+
+## MCP: port published, but nothing answers
+
+Almost always the container's loopback: `mcp.http_addr` is what the process
+listens on **inside** the container, and a published port cannot reach
+`127.0.0.1` there. The container's own healthcheck still passes, which makes it
+look healthy.
+
+```json
+{ "mcp": { "http_addr": "0.0.0.0:8765" } }
+```
+
+Keep the **host** side loopback in compose (`"127.0.0.1:8765:8765"`). The server
+logs a warning when it binds a loopback address inside a container:
+[Host vs. container address](docker.md#host-vs-container-address).
+
+Two quick ways to isolate it – the first one works even when the port is not
+published at all, because it runs the probe inside the container:
+
+```bash
+docker compose exec mcp /usr/local/bin/discord-backup \
+  healthcheck --config /etc/discord-backup.json --principal auto
+
+curl -sS -X POST http://127.0.0.1:8765/mcp \
+  -H 'Content-Type: application/json' -H 'Authorization: Bearer <principal token>' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+`401` from the second one means the port works and only the token is wrong; a
+connection error means nothing is listening on the published port.
 
 ## Config errors
 

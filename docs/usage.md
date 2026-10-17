@@ -114,6 +114,24 @@ discord-backup healthcheck --config /etc/discord-backup.json   # probes mcp.http
 discord-backup healthcheck --url http://127.0.0.1:8765/healthz
 ```
 
+With `--principal` it does a real, read-only MCP round trip instead of a bare
+ping - `initialize`, `tools/list` and `whoami` with that principal's bearer
+token - which is the quickest way to check auth, archive and permissions:
+
+```
+discord-backup healthcheck --config /etc/discord-backup.json --principal auto
+```
+
+```
+http://127.0.0.1:8765/mcp ok: discord-backup 0.2.0 (protocol 2025-06-18)
+  tools (7): whoami, list_channels, list_threads, search_messages, get_message, get_context, list_authors
+  authenticated as martin (111111111111111111)
+  visible: 71 channels, 6012 threads, 310145 messages (permissions: live)
+```
+
+`auto` picks any principal that has a `token`; a name, email, alias or
+`discord_id` picks a specific one. Exit code `0` only when the call succeeded.
+
 ### Which section is enforced when
 
 Validation is split so one command cannot be blocked by the other's section:
@@ -172,7 +190,10 @@ Two equivalent ways to keep an archive fresh:
   Compose template uses, since Compose has no scheduler of its own.
 
 Either way, runs that do overlap are safe: the lock in `<archive_dir>/.lock`
-makes a second run exit `0` with `another backup run is active, exiting`.
+(a real OS lock, `flock`) makes a second run stop – a one-shot run exits `0`
+with `another backup run is active, exiting`, a service waits and re-checks
+after at most a minute (`min(every, 1m)`) instead of sitting idle for the whole
+interval. A crashed process never leaves the lock behind; the OS drops it.
 
 ## Exit codes
 

@@ -31,6 +31,23 @@ import (
 	"discord-backup/internal/store"
 )
 
+// ErrAnotherRunActive means the archive was locked by another run: a second
+// container, a cron job or a manual run is working on it. It is deliberately not
+// a failure - a one-shot run exits 0, a service waits and tries again - and the
+// lock is an OS lock (flock), so a crashed process never leaves it behind.
+var ErrAnotherRunActive = errors.New("another backup run is active")
+
+// lockHolder returns the pid recorded in the lock file, best effort. Inside a
+// container that pid belongs to the container's own namespace, so it identifies
+// "another container's main process" rather than a host pid.
+func lockHolder(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
 // Config controls one backup run.
 type Config struct {
 	Token   string
@@ -171,9 +188,13 @@ func Run(ctx context.Context, cfg Config) error {
 	l, err := lock.Acquire(filepath.Join(cfg.OutDir, ".lock"))
 	if err != nil {
 		if errors.Is(err, lock.ErrLocked) {
-			// Not a failure: the previous cron run is simply still working.
-			log.Info("another backup run is active, exiting")
-			return nil
+			// Not a failure: someone else is working on the archive (a second
+			// container, a cron job, a manual run). The caller decides whether
+			// to exit (one-shot) or come back sooner (service mode).
+			if pid := lockHolder(filepath.Join(cfg.OutDir, ".lock")); pid != "" {
+				return fmt.Errorf("%w (holder pid %s inside its own pid namespace)", ErrAnotherRunActive, pid)
+			}
+			return ErrAnotherRunActive
 		}
 		return fmt.Errorf("acquire lock: %w", err)
 	}

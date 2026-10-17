@@ -111,7 +111,8 @@ docker run --rm -i \
 ```
 
 `-i` keeps stdin open (stdio transport). For HTTP, publish the port; the listen
-address is `mcp.http_addr` in the config:
+address is `mcp.http_addr` in the config. **Inside a container it must not be
+loopback** – see [Host vs. container address](#host-vs-container-address):
 
 ```bash
 docker run --rm -p 127.0.0.1:8765:8765 \
@@ -169,6 +170,11 @@ services:
 
 Points that matter:
 
+- **Two different addresses.** `mcp.http_addr` is where the process listens
+  *inside* the container (`0.0.0.0:8765`); the compose `ports:` entry is what the
+  host exposes (`127.0.0.1:8765:8765`). A container-loopback `http_addr` is
+  unreachable through a published port. See
+  [Host vs. container address](#host-vs-container-address).
 - **Healthcheck without a shell.** The distroless image ships no shell, `curl`
   or `wget`, so the healthcheck execs the binary itself:
   `discord-backup healthcheck --config /etc/discord-backup.json` probes
@@ -195,6 +201,32 @@ Points that matter:
 - **Exposure.** `127.0.0.1:8765` keeps it local. To expose it, terminate TLS in
   a reverse proxy and keep the per-principal bearer tokens; there is no TLS or
   additional auth in the server itself.
+
+### Host vs. container address
+
+The published port and `mcp.http_addr` are two different things, and getting
+them mixed up looks like "nothing is running":
+
+| Where | Value | Why |
+|---|---|---|
+| `mcp.http_addr` (config) | `0.0.0.0:8765` | the process listens inside the container's own network namespace |
+| published port (compose) | `127.0.0.1:8765:8765` | the host side stays loopback, only this machine can reach it |
+
+An `mcp.http_addr` of `127.0.0.1:8765` binds *the container's* loopback, which a
+published port never reaches – the container's healthcheck still succeeds, so it
+looks healthy while `curl http://127.0.0.1:8765` on the host gets nothing. The
+server logs a warning when it detects this (loopback address inside a container).
+
+To tell the two apart, ask the container itself (its loopback works, so a reply
+here means only the publish/bind side is wrong):
+
+```bash
+docker compose exec mcp /usr/local/bin/discord-backup \
+  healthcheck --config /etc/discord-backup.json --principal auto
+```
+
+Binding `0.0.0.0` internally is safe here: the port is only reachable through
+what you publish, and the host side is bound to `127.0.0.1`.
 
 ### Permissions of `config.json` (the usual first failure)
 
