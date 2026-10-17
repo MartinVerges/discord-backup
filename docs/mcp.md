@@ -220,20 +220,26 @@ The filter decides what is *added*: principals that are already in the config
 stay, even if they cannot read the channel (delete those by hand if you want a
 list that is exactly the channel's readers).
 
-`--write` merges the result into the config instead of printing it (atomically,
-mode `0600`, every other value untouched) and prints a `NAME DISCORD_ID TOKEN`
-table, so the tokens can be handed out. The plain command writes nothing, which
-is why it is the easy one inside a container whose config is mounted read-only:
+`--write` merges the result into the config instead of printing it (mode
+`0600`, every other value untouched) and prints a `NAME DISCORD_ID TOKEN`
+table, so the tokens can be handed out. It stages the new file next to the old
+one and renames it into place, so a crash cannot leave a truncated config
+behind. A container bind-mounts the config as its own mount point, though, and
+such a file cannot be renamed over – then the file is rewritten **in place**
+(keeping its mode and owner, which is what you want for a mounted file) and the
+command says so. The plain command writes nothing, which is why it is the easy
+one inside a container whose config is mounted read-only:
 
 ```bash
 docker compose exec backup /usr/local/bin/discord-backup \
   principals --config /etc/discord-backup.json
 ```
 
-For `--write` the config *and its directory* must be writable by the user
-running the command; the shipped compose mounts the file read-only, so use a
-writable copy or run the binary where the config lives. Restart the server
-afterwards (`docker compose up -d`) – the config is read once at start-up.
+For `--write` the config must be writable; the shipped compose mounts the file
+read-only, so either drop the `:ro` (a mounted file is rewritten in place, its
+mode and owner survive) or mount the directory instead of the single file and
+let the command replace it. Restart the server afterwards
+(`docker compose up -d`) – the config is read once at start-up.
 
 Change the config with an invalid value and the command refuses to write at all
 (duplicate name, duplicate ID, duplicate token), so a broken list cannot end up

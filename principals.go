@@ -172,11 +172,16 @@ Examples:
 		len(opts.MCP.Principals), renamedNote(len(res.Renamed)), len(res.Added), botHint(*includeBots))
 
 	if *write {
-		if err := config.SavePrincipals(*configPath, res.All); err != nil {
+		inPlace, err := config.SavePrincipals(*configPath, res.All)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "principals: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(os.Stderr, "wrote %d principals to %s (restart the server: docker compose up -d)\n", len(res.All), *configPath)
+		note := ""
+		if inPlace {
+			note = " in place (a mounted config cannot be replaced, so the file was rewritten)"
+		}
+		fmt.Fprintf(os.Stderr, "wrote %d principals to %s%s (restart the server: docker compose up -d)\n", len(res.All), *configPath, note)
 		printPrincipalTable(os.Stdout, res.All)
 		return 0
 	}

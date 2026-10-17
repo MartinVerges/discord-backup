@@ -121,6 +121,14 @@ connection error means nothing is listening on the published port.
 - `Discord refused the member list (403)` (from `principals`): the bot lacks the
   privileged **Server Members Intent** – Developer Portal → your app → Bot →
   Privileged Gateway Intents.
+- `principals: no channel named X` (from `principals --from-channel`): the name
+  matched nothing. Check the spelling or pass an ID; a thread inherits its
+  permissions from the parent channel, so name that one.
+- `write …: rename …: device or resource busy` (from `principals --write`): the
+  config is a bind-mounted file and a mount point cannot be replaced. The
+  command now rewrites it in place instead; if it still fails with `read-only
+  file system`, the mount is `:ro` – drop that (or mount the directory instead
+  of the single file) for a `--write` run.
 - `unknown field "..."`: a typo – unknown keys are rejected on purpose, so a
   misspelled setting fails loudly instead of being ignored.
 - `config … holds tokens and must not be group/world accessible`: `chmod 600 config.json`.

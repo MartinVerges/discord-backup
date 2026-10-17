@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,7 +23,7 @@ func TestSavePrincipals(t *testing.T) {
 	path := writeConfig(t, "config.json", body, 0o600)
 
 	want := []Principal{{Name: "martin", DiscordID: "U1", Token: "tok-1"}}
-	if err := SavePrincipals(path, want); err != nil {
+	if _, err := SavePrincipals(path, want); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 
@@ -62,7 +63,7 @@ func TestSavePrincipals(t *testing.T) {
 // state before the first server start) gets one.
 func TestSavePrincipalsCreatesSection(t *testing.T) {
 	path := writeConfig(t, "plain.json", `{"guild_id":"123","archive_dir":"/tmp/archive","token":"bot-token"}`, 0o600)
-	if err := SavePrincipals(path, []Principal{{Name: "alice", DiscordID: "U2"}}); err != nil {
+	if _, err := SavePrincipals(path, []Principal{{Name: "alice", DiscordID: "U2"}}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	opts, err := Load(path)
@@ -77,10 +78,91 @@ func TestSavePrincipalsCreatesSection(t *testing.T) {
 	}
 }
 
+// TestSavePrincipalsInPlace: a bind-mounted config cannot be replaced through
+// a rename ("device or resource busy"), so the write has to fall back to
+// rewriting the file itself - keeping its mode and leaving no staging file
+// behind.
+func TestSavePrincipalsInPlace(t *testing.T) {
+	path := writeConfig(t, "config.json", `{"guild_id":"1","archive_dir":"/a","token":"t"}`, 0o600)
+
+	old := renameFile
+	renameFile = func(string, string) error { return errors.New("device or resource busy") }
+	t.Cleanup(func() { renameFile = old })
+
+	inPlace, err := SavePrincipals(path, []Principal{{Name: "alice", DiscordID: "U1", Token: "tok"}})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if !inPlace {
+		t.Fatal("a rename that fails must fall back to an in-place write")
+	}
+	opts, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload after in-place write: %v", err)
+	}
+	if len(opts.MCP.Principals) != 1 || opts.MCP.Principals[0].Token != "tok" {
+		t.Fatalf("principals: %+v", opts.MCP.Principals)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", fi.Mode().Perm())
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("directory holds %v, want only the config", names)
+	}
+}
+
+// TestSavePrincipalsReadOnlyDir: the image mounts the config into a directory
+// it cannot write (its own /etc), where there is no room to stage a file. The
+// write still has to go through the file itself.
+func TestSavePrincipalsReadOnlyDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory mode")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"guild_id":"1","archive_dir":"/a","token":"t"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) }) // let t.TempDir clean up
+
+	inPlace, err := SavePrincipals(path, []Principal{{Name: "alice", DiscordID: "U1"}})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if !inPlace {
+		t.Fatal("an unwritable directory must fall back to an in-place write")
+	}
+	opts, err := Load(path)
+	if err != nil {
+		t.Fatalf("reload after in-place write: %v", err)
+	}
+	if len(opts.MCP.Principals) != 1 || opts.MCP.Principals[0].Name != "alice" {
+		t.Fatalf("principals: %+v", opts.MCP.Principals)
+	}
+}
+
 // TestSavePrincipalsMissingFile: the error has to make sense to someone who
 // genuinely has no config (the file is the only input).
 func TestSavePrincipalsMissingFile(t *testing.T) {
-	err := SavePrincipals(filepath.Join(t.TempDir(), "nope.json"), nil)
+	_, err := SavePrincipals(filepath.Join(t.TempDir(), "nope.json"), nil)
 	if err == nil || !strings.Contains(err.Error(), "nope.json") {
 		t.Fatalf("want an error naming the file, got %v", err)
 	}
@@ -90,7 +172,7 @@ func TestSavePrincipalsMissingFile(t *testing.T) {
 // email or aliases list must not turn up as "email": "" / "aliases": null.
 func TestPrincipalJSONOmitsEmpty(t *testing.T) {
 	path := writeConfig(t, "config.json", `{"guild_id":"1","archive_dir":"/a","token":"t"}`, 0o600)
-	if err := SavePrincipals(path, []Principal{{Name: "alice", DiscordID: "U2", Token: "tok"}}); err != nil {
+	if _, err := SavePrincipals(path, []Principal{{Name: "alice", DiscordID: "U2", Token: "tok"}}); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)
