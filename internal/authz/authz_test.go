@@ -31,6 +31,9 @@ func testChannels() []map[string]any {
 
 type fakeAPI struct {
 	fail atomic.Bool
+	// memberHits counts calls to the per-member endpoint, so a test can prove
+	// a code path does not ask Discord once per member.
+	memberHits atomic.Int64
 }
 
 func (f *fakeAPI) handler() http.Handler {
@@ -50,6 +53,7 @@ func (f *fakeAPI) handler() http.Handler {
 		json.NewEncoder(w).Encode(testRoles())
 	})
 	mux.HandleFunc("/guilds/G/members/", func(w http.ResponseWriter, r *http.Request) {
+		f.memberHits.Add(1)
 		if f.fail.Load() {
 			http.Error(w, "discord down", http.StatusForbidden)
 			return
@@ -133,6 +137,40 @@ func TestLiveLookup(t *testing.T) {
 	}
 	if got, _ := r.AllowedChannels(context.Background(), "U2"); got["C"] {
 		t.Fatalf("U2 must not read C, got %v", got)
+	}
+}
+
+// TestAllowedChannelsForRoles: a caller that already has the member's roles
+// (the principals command reads them from the member list) gets the same answer
+// without a single member lookup.
+func TestAllowedChannelsForRoles(t *testing.T) {
+	fake := &fakeAPI{}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	r := New(Config{
+		Client:       discord.New("tok", srv.URL),
+		SnapshotPath: snapshotFile(t),
+		GuildID:      "G",
+		ChannelTTL:   time.Minute,
+		MemberTTL:    time.Minute,
+	})
+	ctx := context.Background()
+	got, err := r.AllowedChannelsForRoles(ctx, "U1", []string{"R1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got["C"] {
+		t.Fatalf("a member with R1 must read C, got %v", got)
+	}
+	got, err = r.AllowedChannelsForRoles(ctx, "U2", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["C"] {
+		t.Fatalf("a member without roles must not read C, got %v", got)
+	}
+	if n := fake.memberHits.Load(); n != 0 {
+		t.Fatalf("%d member lookups, want 0 (the caller knows the roles)", n)
 	}
 }
 

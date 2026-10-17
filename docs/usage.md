@@ -10,8 +10,9 @@ discord-backup principals --config config.json [--write]
 caller's Discord permissions – see [mcp.md](mcp.md).
 
 `discord-backup principals` turns the guild's member list into `mcp.principals`
-entries (name + `discord_id` from Discord, a fresh token each) and prints a
-ready-to-paste block; `--write` merges it into the config. See
+entries (the name people use on the server, the real `discord_id`, a fresh token
+each) and prints a ready-to-paste block; `--from-channel` keeps only the members
+who may read that channel, `--write` merges the result into the config. See
 [mcp.md](mcp.md#building-the-list-from-discord).
 
 ## One configuration file
@@ -111,6 +112,8 @@ Since every setting lives in the config, the CLI is small:
 | `--principal NAME` | Identity for the stdio transport (mcp) |
 | `--http` | Serve HTTP instead of stdio (mcp) |
 | `--write` | Merge the generated principals into the config (principals) |
+| `--from-channel CH` | Keep only members who may read CH (principals) |
+| `--keep-names` | Leave existing principal names alone (principals) |
 | `--include-bots` | Keep bot accounts in the list (principals) |
 | `--no-token` | Generate principals without tokens, for stdio (principals) |
 | `--quiet` | Only log warnings and errors |

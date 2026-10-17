@@ -15,19 +15,11 @@ import (
 	"discord-backup/internal/discord"
 )
 
-// stubDiscord serves just enough of the Discord REST API for the principals
-// command: the guild, and a member list that spans more than one page. With
-// loop it answers every page with the same 1000 members - the shape of a
-// broken API or a proxy - which must end the walk, not spin forever.
-func stubDiscord(t *testing.T, loop bool) *httptest.Server {
+// stubAPI serves the guild, its member pages, its channels and its roles - the
+// four things the principals command may ask for. page receives the `after`
+// cursor and returns that page of members.
+func stubAPI(t *testing.T, page func(after string) []map[string]any) *httptest.Server {
 	t.Helper()
-	member := func(id, name string) map[string]any {
-		return map[string]any{"user": map[string]any{"id": id, "username": name}, "roles": []string{}}
-	}
-	var bigPage []map[string]any
-	for i := 0; i < 1000; i++ {
-		bigPage = append(bigPage, member(fmt.Sprintf("m%04d", i), fmt.Sprintf("user%04d", i)))
-	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bot tok" {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -36,23 +28,53 @@ func stubDiscord(t *testing.T, loop bool) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/members"):
-			after := r.URL.Query().Get("after")
-			switch {
-			case loop, after == "":
-				json.NewEncoder(w).Encode(bigPage)
-			case after == "m0999":
-				json.NewEncoder(w).Encode([]map[string]any{member("m1000", "zed")})
-			default:
-				json.NewEncoder(w).Encode(bigPage)
-			}
+			json.NewEncoder(w).Encode(page(r.URL.Query().Get("after")))
+		case strings.HasSuffix(r.URL.Path, "/channels"):
+			// #general: everyone may view it, READ_MESSAGE_HISTORY needs R1.
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "C1", "name": "general", "type": 0},
+				{"id": "C2", "name": "secret", "type": 0, "permission_overwrites": []map[string]any{
+					{"id": "G", "type": 0, "allow": "0", "deny": "1024"},
+				}},
+			})
+		case strings.HasSuffix(r.URL.Path, "/roles"):
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "G", "name": "@everyone", "permissions": "1024", "position": 0},
+				{"id": "R1", "name": "readers", "permissions": "65536", "position": 1},
+			})
 		case strings.HasPrefix(r.URL.Path, "/guilds/"):
-			io.WriteString(w, `{"id":"G","name":"Test Guild","approximate_member_count":1001}`)
+			io.WriteString(w, `{"id":"G","name":"Test Guild","approximate_member_count":3}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// stubDiscord pages 1000 members, then one more. With loop it answers every
+// page with the same 1000 members - the shape of a broken API or a proxy -
+// which must end the walk, not spin forever.
+func stubDiscord(t *testing.T, loop bool) *httptest.Server {
+	t.Helper()
+	bigPage := make([]map[string]any, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		bigPage = append(bigPage, memberJSON(fmt.Sprintf("m%04d", i), fmt.Sprintf("user%04d", i)))
+	}
+	return stubAPI(t, func(after string) []map[string]any {
+		switch {
+		case loop, after == "":
+			return bigPage
+		case after == "m0999":
+			return []map[string]any{memberJSON("m1000", "zed")}
+		default:
+			return bigPage
+		}
+	})
+}
+
+func memberJSON(id, username string) map[string]any {
+	return map[string]any{"user": map[string]any{"id": id, "username": username}, "roles": []string{}}
 }
 
 // writeMCPConfig writes a token-bearing config with the mode Load insists on.
@@ -174,6 +196,54 @@ func TestRunPrincipalsNoToken(t *testing.T) {
 	}
 	if !strings.Contains(out, `"name": "user0000"`) {
 		t.Fatalf("no principals:\n%s", out)
+	}
+}
+
+// TestRunPrincipalsFromChannel keeps only the members who may actually read the
+// channel: @everyone may view #general, but reading its history needs the role.
+func TestRunPrincipalsFromChannel(t *testing.T) {
+	srv := stubAPI(t, func(string) []map[string]any {
+		return []map[string]any{
+			{"user": map[string]any{"id": "U1", "username": "aduffeck_63702", "global_name": "Alexander Duffeck"}, "roles": []string{"R1"}},
+			{"user": map[string]any{"id": "U2", "username": "bob"}, "roles": []string{}},
+			{"user": map[string]any{"id": "U3", "username": "carol"}, "roles": []string{"R1"}},
+		}
+	})
+	old := apiBase
+	apiBase = srv.URL
+	t.Cleanup(func() { apiBase = old })
+	path := writeMCPConfig(t, "")
+
+	out, code := captureStdout(t, func() int {
+		return runPrincipals([]string{"--config", path, "--from-channel", "#general"})
+	})
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out, "Alexander Duffeck") || !strings.Contains(out, "carol") {
+		t.Fatalf("readers missing:\n%s", out)
+	}
+	if strings.Contains(out, "bob") {
+		t.Fatalf("bob may not read #general, but is in the list:\n%s", out)
+	}
+
+	// A channel @everyone cannot even see is the other direction, and it works
+	// by ID too: nobody is a member of #secret.
+	out, code = captureStdout(t, func() int {
+		return runPrincipals([]string{"--config", path, "--from-channel", "C2"})
+	})
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if strings.Contains(out, `"discord_id"`) {
+		t.Fatalf("nobody may read #secret:\n%s", out)
+	}
+
+	// An unknown channel must fail instead of quietly keeping everybody.
+	if _, code := captureStdout(t, func() int {
+		return runPrincipals([]string{"--config", path, "--from-channel", "nope"})
+	}); code == 0 {
+		t.Fatal("an unknown channel must fail")
 	}
 }
 

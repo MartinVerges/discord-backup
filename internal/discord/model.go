@@ -11,9 +11,12 @@ import (
 // --- types -----------------------------------------------------------------
 
 type User struct {
-	ID       string `json:"id"`
+	ID string `json:"id"`
+	// Username is the login handle (the unique, non-display name).
 	Username string `json:"username"`
-	Bot      bool   `json:"bot"`
+	// GlobalName is the display name the user chose; empty when unset.
+	GlobalName string `json:"global_name"`
+	Bot        bool   `json:"bot"`
 }
 
 type Guild struct {

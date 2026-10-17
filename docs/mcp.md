@@ -167,21 +167,27 @@ member list and prints a ready-to-paste block. stdout is the block:
 ```json
     "principals": [
       {
-        "name": "martin",
+        "name": "Alexander Duffeck",
         "discord_id": "111111111111111111",
         "token": "lXh3iCz9…"
       }
     ]
 ```
 
-stderr is the human summary (`Test Guild: 74 members (68 human), 3 already
-configured, 65 new`). What it does:
+stderr is the human summary (`Test Guild: 74 members (68 human), 61 may read
+#support-tickets (7 excluded)` / `3 already configured (2 renamed), 65 new`).
+What it does:
 
-- **Additive and idempotent.** Existing principals are copied over untouched,
-  tokens included, and members that are already configured are skipped – a
-  second run changes nothing and never breaks a running client.
-- **Names** are the Discord usernames (unique per account). A name that is
-  already taken gets the last four digits of the user ID appended.
+- **Names come from the server**, in the order people actually use them: the
+  server nickname, otherwise the Discord display name, otherwise the login
+  handle (`aduffeck_63702`) and the ID only as a last resort. Whitespace is
+  collapsed. If a name is already taken, the handle is appended in parentheses
+  (`Alexander Duffeck (aduffeck2)`) – never an opaque digit tail alone.
+- **Additive and idempotent.** Existing principals keep their token (a running
+  client must not be locked out) and are renamed to what Discord currently
+  shows; members already in the list are never added twice, and a second run
+  changes nothing. `--keep-names` leaves existing names alone – the escape
+  hatch if you renamed someone on purpose.
 - **Tokens** are 32 random bytes (base64url), one per new principal.
   `--no-token` leaves them out: stdio needs none, only HTTP does.
 - **`email` and `aliases` stay empty**: a bot cannot read e-mail addresses.
@@ -190,6 +196,29 @@ configured, 65 new`). What it does:
   person).
 - Listing members needs the privileged **Server Members Intent**; without it
   Discord answers `403` and the command says which switch to flip.
+
+#### Only the people who can read a channel
+
+`--from-channel` (repeatable, or comma-separated) keeps only the members who
+may actually read that channel:
+
+```bash
+discord-backup principals --config config.json --from-channel support
+discord-backup principals --config config.json --from-channel '#support-tickets,moderators'
+```
+
+The value is a channel name, a `#name` or an ID; a name that matches nothing is
+an error rather than a filter that silently keeps everybody (a thread inherits
+from its parent channel – pass that). The rule is exactly the one the archive
+and the MCP server use, because it is the same permission math: **VIEW_CHANNEL
+and READ_MESSAGE_HISTORY** on that channel, with category overwrites, channel
+overwrites, roles and the administrator bypass. Several channels mean "may read
+at least one of them". If Discord is unreachable, the `permissions.json` in the
+archive is used as the fallback, like the MCP server does.
+
+The filter decides what is *added*: principals that are already in the config
+stay, even if they cannot read the channel (delete those by hand if you want a
+list that is exactly the channel's readers).
 
 `--write` merges the result into the config instead of printing it (atomically,
 mode `0600`, every other value untouched) and prints a `NAME DISCORD_ID TOKEN`

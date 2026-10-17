@@ -91,6 +91,41 @@ func (r *Resolver) AllowedChannels(ctx context.Context, userID string) (map[stri
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	guildID, roles, channels, err := r.inputsLocked(ctx)
+	if err != nil {
+		return nil, err
+	}
+	userRoles, known := r.memberRolesLocked(ctx, userID)
+	if !known {
+		// Fail closed: a user we cannot prove is a guild member gets nothing,
+		// even if @everyone would otherwise grant read access.
+		r.log.Info("no membership evidence, denying all channels", "user", userID)
+		return map[string]bool{}, nil
+	}
+	return perms.ComputeAllowed(guildID, roles, channels, userID, userRoles), nil
+}
+
+// AllowedChannelsForRoles is AllowedChannels for a caller that already knows
+// the member's role IDs (the "principals" command reads them straight from the
+// member list and must not pay one API call per member). It deliberately skips
+// the membership check: an empty role list means a member without roles, which
+// is exactly what @everyone-only access looks like. The caller has to have
+// established membership itself.
+func (r *Resolver) AllowedChannelsForRoles(ctx context.Context, userID string, roleIDs []string) (map[string]bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	guildID, roles, channels, err := r.inputsLocked(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return perms.ComputeAllowed(guildID, roles, channels, userID, roleIDs), nil
+}
+
+// inputsLocked returns the guild ID, roles and channels a permission
+// computation needs: live when possible, otherwise the archive snapshot as a
+// unit, so channels and roles always come from the same point in time.
+func (r *Resolver) inputsLocked(ctx context.Context) (string, []discord.Role, []discord.Channel, error) {
 	guildID := r.cfg.GuildID
 	channels := r.channelsLocked(ctx)
 	// Only bother with roles when we have channels to apply them to: if the
@@ -112,17 +147,9 @@ func (r *Resolver) AllowedChannels(ctx context.Context, userID string) (map[stri
 		}
 	}
 	if channels == nil || roles == nil {
-		return nil, fmt.Errorf("no permission data: Discord unreachable and no usable snapshot at %q", r.cfg.SnapshotPath)
+		return "", nil, nil, fmt.Errorf("no permission data: Discord unreachable and no usable snapshot at %q", r.cfg.SnapshotPath)
 	}
-
-	userRoles, known := r.memberRolesLocked(ctx, userID)
-	if !known {
-		// Fail closed: a user we cannot prove is a guild member gets nothing,
-		// even if @everyone would otherwise grant read access.
-		r.log.Info("no membership evidence, denying all channels", "user", userID)
-		return map[string]bool{}, nil
-	}
-	return perms.ComputeAllowed(guildID, roles, channels, userID, userRoles), nil
+	return guildID, roles, channels, nil
 }
 
 // live reports whether live API lookups are configured at all.
