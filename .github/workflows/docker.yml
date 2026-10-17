@@ -2,16 +2,16 @@ name: Docker
 
 # Publishes multi-arch images (amd64 + arm64) to ghcr.io:
 #   - every main commit  -> :latest
-#   - every version tag  -> :vX.Y.Z (e.g. :v0.1.0)
-# Image publishing lives here (not in GoReleaser): the same Dockerfile is
-# used for both, and plain docker/build-push-action handles manifest lists
-# correctly.
+#   - every version tag  -> :YYMM.x (e.g. :2610.1)
+# Image publishing lives here (not in the Release workflow): the same
+# Dockerfile is used for both, and plain docker/build-push-action handles
+# manifest lists correctly.
 on:
   push:
     branches:
       - main
     tags:
-      - "v*"
+      - "[0-9]*"
 
 permissions:
   contents: read
@@ -42,3 +42,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Stamps the version the binary reports: the tag (2610.1) on a
+          # release, "dev" for a main build.
+          build-args: |
+            VERSION=${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}

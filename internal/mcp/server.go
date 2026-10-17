@@ -17,9 +17,13 @@ import (
 	"discord-backup/internal/store"
 )
 
+// Version is what MCP clients see as the server version in `initialize`
+// (and what `healthcheck --principal` prints). The command stamps the build
+// version into it at start-up; a library user gets "dev".
+var Version = "dev"
+
 const (
 	serverName             = "discord-backup"
-	serverVersion          = "0.2.0"
 	defaultProtocolVersion = "2025-06-18"
 )
 
@@ -180,7 +184,7 @@ func (s *Server) initialize(params json.RawMessage) map[string]any {
 		},
 		"serverInfo": map[string]any{
 			"name":    serverName,
-			"version": serverVersion,
+			"version": Version,
 		},
 		"instructions": "Read-only access to a Discord archive, restricted to what " +
 			"the configured principal may read per Discord channel permissions. " +

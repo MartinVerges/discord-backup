@@ -172,6 +172,13 @@ func asList(v any) []any         { l, _ := v.([]any); return l }
 func TestInitializeAndToolsList(t *testing.T) {
 	s := newTestServer(t, buildArchive(t))
 
+	// The reported version is not a constant any more: the command stamps the
+	// build version (YYMM.x) into Version, and initialize is where clients read
+	// it, so a detached copy shows up here.
+	old := Version
+	Version = "2610.1"
+	t.Cleanup(func() { Version = old })
+
 	resp := s.Handle(context.Background(), nil, &Request{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "initialize",
 		Params: json.RawMessage(`{"protocolVersion":"2025-06-18","capabilities":{}}`)})
 	if resp == nil || resp.Error != nil {
@@ -180,6 +187,9 @@ func TestInitializeAndToolsList(t *testing.T) {
 	res := resp.Result.(map[string]any)
 	if res["serverInfo"].(map[string]any)["name"] != "discord-backup" {
 		t.Fatalf("serverInfo: %+v", res)
+	}
+	if got := res["serverInfo"].(map[string]any)["version"]; got != "2610.1" {
+		t.Fatalf("serverInfo version = %v, want the stamped version", got)
 	}
 
 	resp = s.Handle(context.Background(), nil, &Request{JSONRPC: "2.0", ID: json.RawMessage("2"), Method: "tools/list"})

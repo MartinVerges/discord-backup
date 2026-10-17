@@ -1,38 +1,70 @@
 name: Release
 
-# Creates a GitHub Release with downloadable binaries (linux/darwin/windows,
-# amd64/arm64) plus checksums, and pushes the container image to ghcr.io.
-# Trigger: git tag v0.1.0 && git push origin v0.1.0
+# Builds the downloadable binaries and the GitHub Release for a version tag.
+#
+# Versions follow YYMM.x: two digits of year, two of month, a dot, then the
+# release number within that month. 2610.1 is the first release of 2026-10,
+# 2610.2 the second, 2611.1 the first of November. scripts/release.sh works out
+# the next one from the tags that already exist:
+#
+#   ./scripts/release.sh          # print the next tag, change nothing
+#   ./scripts/release.sh --yes    # tag it and push (starts this workflow)
+#
+# GoReleaser is not used here (any more): it insists on semantic versions and
+# stops with "Invalid Semantic Version" on a tag like 2610.1.
 on:
   push:
     tags:
-      - "v*"
+      - "[0-9]*"
 
 permissions:
   contents: write
-  packages: write
-  id-token: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --clean
+
+      - name: Check the tag
+        run: |
+          set -eu
+          case "$GITHUB_REF_NAME" in
+            [0-9][0-9][0-9][0-9].[0-9]*) echo "releasing $GITHUB_REF_NAME" ;;
+            *) echo "::error::tag $GITHUB_REF_NAME is not YYMM.x (e.g. 2610.1)"; exit 1 ;;
+          esac
+
+      # One static binary per target, then one archive per target:
+      # discord-backup_<version>_<os>_<arch>.tar.gz (.zip on Windows), holding
+      # the binary plus LICENSE, README.md and docs/ - the same content the
+      # releases shipped before, plus a checksums.txt over all archives.
+      - name: Build and package
+        run: |
+          set -eu
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            goos="${target%%/*}"
+            goarch="${target##*/}"
+            bin="discord-backup"
+            [ "$goos" = windows ] && bin="discord-backup.exe"
+            echo "building $goos/$goarch"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "-s -w -X main.version=$GITHUB_REF_NAME" -o "$bin" .
+            name="discord-backup_${GITHUB_REF_NAME}_${goos}_${goarch}"
+            if [ "$goos" = windows ]; then
+              zip -qr "dist/$name.zip" "$bin" LICENSE README.md docs
+            else
+              tar -czf "dist/$name.tar.gz" "$bin" LICENSE README.md docs
+            fi
+            rm -f "$bin"
+          done
+          (cd dist && sha256sum ./*.tar.gz ./*.zip >checksums.txt)
+          ls -l dist
+
+      - name: Publish the release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes

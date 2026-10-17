@@ -135,7 +135,7 @@ discord-backup healthcheck --config /etc/discord-backup.json --principal auto
 ```
 
 ```
-http://127.0.0.1:8765/mcp ok: discord-backup 0.2.0 (protocol 2025-06-18)
+http://127.0.0.1:8765/mcp ok: discord-backup 2610.1 (protocol 2025-06-18)
   tools (7): whoami, list_channels, list_threads, search_messages, get_message, get_context, list_authors
   authenticated as martin (111111111111111111)
   visible: 71 channels, 6012 threads, 310145 messages (permissions: live)

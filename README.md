@@ -93,7 +93,31 @@ docker run --rm -v "$PWD/archive:/data" \
   ghcr.io/martinverges/discord-backup:latest --config /etc/discord-backup.json
 ```
 
-Details: [docs/docker.md](docs/docker.md). A new image is published automatically with every `v*` release.
+Details: [docs/docker.md](docs/docker.md). Every version tag publishes an image next to it.
+
+## Releases
+
+Versions are **`YYMM.x`** – two digits of year, two of month, a dot, then the
+release number within that month:
+
+| Tag | Meaning |
+|---|---|
+| `2610.1` | first release of October 2026 |
+| `2610.2` | second release of October 2026 |
+| `2611.1` | first release of November 2026 |
+
+One command cuts the next one (it only prints the tag unless you say `--yes`):
+
+```bash
+./scripts/release.sh          # 2610.1   (nothing changed)
+./scripts/release.sh --yes    # tag + push -> Release workflow builds the binaries,
+                              # Docker workflow publishes ghcr.io/…:2610.1
+```
+
+Everything else follows the tag: the archive names
+(`discord-backup_2610.1_linux_amd64.tar.gz`), `discord-backup --version`, the
+version MCP clients see in `initialize`, and the container image tag. The same
+number is never released twice – a fix gets the next number of its month.
 
 ## License
 

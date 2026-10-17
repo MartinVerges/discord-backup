@@ -33,9 +33,15 @@ import (
 // defaultConfigPath is used when --config is not given.
 const defaultConfigPath = "config.json"
 
-// version is stamped in by GoReleaser (ldflags -X main.version=...).
+// version is stamped in by the release workflow (ldflags -X main.version=...).
+// It follows the YYMM.x scheme: two digits of year, two of month, then the
+// release number within that month (2610.1 = first release of 2026-10).
 // Local builds report "dev".
 var version = "dev"
+
+func init() {
+	mcp.Version = version // the version MCP clients are told
+}
 
 func main() {
 	if len(os.Args) > 1 {

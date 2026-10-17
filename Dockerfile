@@ -5,10 +5,11 @@
 # the binary for the image platform (amd64/arm64).
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 ARG TARGETARCH
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod ./
 COPY . .
-RUN CGO_ENABLED=0 GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /discord-backup . \
+RUN CGO_ENABLED=0 GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o /discord-backup . \
  && mkdir -p /data && chown 65532:65532 /data
 
 # --- run stage: distroless (Debian 13), non-root, ~12 MB total ---

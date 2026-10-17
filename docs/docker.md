@@ -3,7 +3,9 @@
 Prebuilt images (amd64 + arm64), published by the Docker workflow:
 
 - `ghcr.io/martinverges/discord-backup:latest` – built from every `main` commit
-- `ghcr.io/martinverges/discord-backup:v0.1.0` – built from the `v0.1.0` tag
+- `ghcr.io/martinverges/discord-backup:2610.1` – built from the `2610.1` tag
+  (see [Releases](../README.md#releases) for the `YYMM.x` scheme; `:v0.1.0` was
+  the last image under the old `vX.Y.Z` naming)
 
 (Binaries for Linux/macOS/Windows live on the Releases page; the Release
 workflow builds those, images are published separately.)
