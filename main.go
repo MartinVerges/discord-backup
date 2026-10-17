@@ -350,7 +350,7 @@ offline fallback when Discord is unreachable. See docs/mcp.md.
 		return 1
 	}
 	if settings.Token == "" {
-		log.Info("running in snapshot-only mode (no token configured); set token_file for live permission refresh")
+		log.Info("running in snapshot-only mode (no token configured); set \"token\" for live permission refresh")
 	}
 	log.Info("mcp stdio ready", "principal", pr.Name, "discord_id", pr.DiscordID, "archive", settings.ArchiveDir)
 	if err := srv.ServeStdio(ctx, pr); err != nil {

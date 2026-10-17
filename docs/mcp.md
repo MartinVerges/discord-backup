@@ -65,19 +65,23 @@ principal could read the whole archive.
 ## Requirements
 
 - An existing archive (`server_<id>/`) produced by `discord-backup`.
-- For **live** permission checks: the **same bot token** as the backup
-  (`token_file`, mode `0600`). The bot must be able to read the guild's
-  channels, roles and members.
+- For **live** permission checks: the **same bot token** as the backup,
+  either inline in the config (`token`) or in a `0600` file (`token_file`).
+  The bot must be able to read the guild's channels, roles and members.
 - Without a token the server runs **snapshot-only**: roles and member roles
   come from the last backup run.
 
 ## Configuration
 
+Everything lives in one file. A config that contains any token (the bot token
+or a principal's HTTP token) **must be mode `0600`**, and the server refuses to
+start otherwise – so an inline token is no looser than a separate token file.
+
 ```json
 {
   "archive_dir": "/var/lib/discord-backup",
   "guild_id": "123456789012345678",
-  "token_file": "/etc/discord-backup/token",
+  "token": "BOT_TOKEN_SAME_AS_THE_BACKUP",
   "deleted": "hide",
   "refresh_ttl": "60s",
   "channel_ttl": "5m",
@@ -105,11 +109,17 @@ principal could read the whole archive.
 }
 ```
 
+```bash
+chmod 600 mcp.json        # required: the file holds tokens
+# generate each principal token with: openssl rand -hex 32
+```
+
 | Field | Default | Meaning |
 |---|---|---|
 | `archive_dir` | – | Backup `--out` directory (containing `server_<id>`), **required** |
 | `guild_id` | – | Selects one archive when `archive_dir` holds several |
-| `token_file` / `token` | – | Bot token for live permission refresh (file must be `0600`); falls back to `DISCORD_TOKEN_FILE` / `DISCORD_TOKEN` |
+| `token` | – | Bot token for live permission refresh, inline in this file |
+| `token_file` | – | Alternative: read the bot token (mode `0600`) from a separate file, e.g. an injected secret |
 | `deleted` | `hide` | `hide` deleted messages, or `show` them (marked `deleted`) |
 | `refresh_ttl` | `60s` | How often the archive is rescanned for new data |
 | `channel_ttl` | `5m` | Cache lifetime for channel overwrites + roles |
@@ -252,8 +262,12 @@ later call is sub-second.
 ## Security notes
 
 - Read-only: no tool writes to the archive; the server downloads nothing.
-- The token is read from a `0600` file (or the environment); it is never
-  logged and never accepted as a CLI argument.
+- Every token – the bot token and each principal's bearer token – lives in the
+  `0600` config file, or in a `0600` file the config points to via `token_file`;
+  the server refuses a config that holds tokens but is group/world-readable.
+  Tokens are never logged and never accepted as CLI arguments. (The backup CLI
+  additionally accepts `DISCORD_TOKEN`/`DISCORD_TOKEN_FILE`; the MCP server does
+  not, so secrets have exactly one home.)
 - HTTP requires a per-principal bearer token (constant-time comparison).
 - Content outside the caller's permissions is filtered before it leaves the
   process — including search hits, message lookups, context and channel lists.

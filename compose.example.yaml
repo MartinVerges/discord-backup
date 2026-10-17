@@ -3,15 +3,20 @@
 #
 #   cp compose.example.yaml compose.yaml
 #   cp mcp.example.json mcp.json          # set "archive_dir": "/data"
+#                                         # keep "token_file": "/token", or
+#                                         # inline the bot token as "token"
+#   chmod 600 mcp.json                    # it holds tokens
 #   printf '%s' "$BOT_TOKEN" > token && chmod 600 token
 #
 # The container runs as uid:gid 65532:65532, so the bind-mounted paths must be
 # readable/writable by that user:
 #
 #   mkdir -p archive
-#   sudo chown 65532:65532 archive token
+#   sudo chown 65532:65532 archive mcp.json token
 #
-# See docs/docker.md and docs/mcp.md.
+# The MCP reads no environment variables: the bot token comes from mcp.json
+# ("token") or from the file it points to ("token_file"). Only the one-shot
+# backup below takes the token as a flag. See docs/docker.md and docs/mcp.md.
 
 services:
   # One-shot sync. Run it from host cron (recommended) or as a service with a
@@ -36,12 +41,10 @@ services:
   mcp:
     image: ghcr.io/martinverges/discord-backup:latest
     restart: unless-stopped
-    environment:
-      # Used only when mcp.json sets neither "token" nor "token_file".
-      DISCORD_TOKEN_FILE: /token
     volumes:
       - ./archive:/data:ro
       - ./mcp.json:/etc/mcp.json:ro
+      # Only needed when mcp.json uses "token_file" instead of "token".
       - ./token:/token:ro
     command:
       - mcp

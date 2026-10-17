@@ -335,6 +335,58 @@ func TestResolvePrincipals(t *testing.T) {
 	}
 }
 
+// --- config ----------------------------------------------------------------
+
+func TestLoadConfigSecretPermissions(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string, mode os.FileMode) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, mode); err != nil { // defeat umask
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	const withBotToken = `{"archive_dir":"/data","token":"bot-secret",
+		"principals":[{"name":"alice","discord_id":"U1"}]}`
+	const withPrincipalToken = `{"archive_dir":"/data",
+		"principals":[{"name":"alice","discord_id":"U1","token":"bearer"}]}`
+	const noSecrets = `{"archive_dir":"/data","token_file":"/token",
+		"principals":[{"name":"alice","discord_id":"U1"}]}`
+
+	// A 0600 config with an inline token loads, and the token is resolved.
+	p := write("secure.json", withBotToken, 0o600)
+	cfg, err := LoadConfig(p)
+	if err != nil {
+		t.Fatalf("0600 config with inline token: %v", err)
+	}
+	st, err := cfg.Settings()
+	if err != nil || st.Token != "bot-secret" {
+		t.Fatalf("inline token not resolved: %q %v", st.Token, err)
+	}
+
+	// Secrets in a group/world-readable config are refused...
+	for name, body := range map[string]string{
+		"inline.json":    withBotToken,
+		"principal.json": withPrincipalToken,
+	} {
+		if _, err := LoadConfig(write(name, body, 0o644)); err == nil {
+			t.Fatalf("%s: a config holding tokens must be rejected at 0644", name)
+		} else if !strings.Contains(err.Error(), "chmod 600") {
+			t.Fatalf("%s: error should point at the fix, got %v", name, err)
+		}
+	}
+
+	// ...but a config that carries no token may be readable.
+	if _, err := LoadConfig(write("plain.json", noSecrets, 0o644)); err != nil {
+		t.Fatalf("secret-free config at 0644: %v", err)
+	}
+}
+
 // --- http transport --------------------------------------------------------
 
 func TestHTTPTransport(t *testing.T) {

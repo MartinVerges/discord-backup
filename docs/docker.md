@@ -74,12 +74,15 @@ docker run --rm \
 
 ## MCP (read-only access)
 
-The same image serves the MCP endpoint; just pass the subcommand:
+The same image serves the MCP endpoint; just pass the subcommand. The MCP
+config is self-contained: it holds the bot token (and the per-principal bearer
+tokens), so `mcp.json` must be `0600` **and** readable by the container's uid
+`65532`:
 
 ```bash
+chmod 600 mcp.json
 docker run --rm -i \
-  -v /var/lib/discord-backup:/data \
-  -v /etc/discord-backup/token:/token:ro \
+  -v /var/lib/discord-backup:/data:ro \
   -v /etc/discord-backup/mcp.json:/etc/mcp.json:ro \
   discord-backup mcp --config /etc/mcp.json --principal martin
 ```
@@ -89,13 +92,13 @@ the config's `archive_dir` pointing at `/data`:
 
 ```bash
 docker run --rm -p 127.0.0.1:8765:8765 \
-  -v /var/lib/discord-backup:/data \
+  -v /var/lib/discord-backup:/data:ro \
   -v /etc/discord-backup/mcp.json:/etc/mcp.json:ro \
   discord-backup mcp --config /etc/mcp.json --http --addr 0.0.0.0:8765
 ```
 
-Serve the archive **read-only** (`-v ...:/data:ro`) if the MCP runs in a
-separate container from the backup. See [mcp.md](mcp.md).
+The archive is mounted **read-only** (`:ro`) because the MCP never writes to
+it. See [mcp.md](mcp.md).
 
 ### MCP as a service (Compose)
 
@@ -105,10 +108,11 @@ with `restart: unless-stopped`. A ready-to-copy template lives in
 
 ```bash
 cp compose.example.yaml compose.yaml
-cp mcp.example.json mcp.json     # set "archive_dir": "/data" and a token
+cp mcp.example.json mcp.json          # set "archive_dir": "/data"
+chmod 600 mcp.json                    # it holds tokens
 printf '%s' "$BOT_TOKEN" > token && chmod 600 token
 mkdir -p archive
-sudo chown 65532:65532 archive token   # the container runs as 65532:65532
+sudo chown 65532:65532 archive mcp.json token   # container runs as 65532:65532
 docker compose up -d mcp
 ```
 
@@ -119,12 +123,10 @@ services:
   mcp:
     image: ghcr.io/martinverges/discord-backup:latest
     restart: unless-stopped
-    environment:
-      DISCORD_TOKEN_FILE: /token          # or set "token_file" in mcp.json
     volumes:
       - ./archive:/data:ro            # read-only: the MCP never writes
       - ./mcp.json:/etc/mcp.json:ro
-      - ./token:/token:ro
+      - ./token:/token:ro             # only if mcp.json uses "token_file"
     command: ["mcp", "--config", "/etc/mcp.json", "--http", "--addr", "0.0.0.0:8765"]
     ports:
       - "127.0.0.1:8765:8765"         # keep local; add a TLS proxy to expose
@@ -142,15 +144,15 @@ Points that matter:
   or `wget`, so the healthcheck execs the binary itself:
   `discord-backup healthcheck --url http://127.0.0.1:8765/healthz` exits `0`
   exactly when `/healthz` answers `200`.
+- **One config file.** The MCP reads no environment variables at all: the bot
+  token is either inline in `mcp.json` (`"token"`) or in a file it points to
+  (`"token_file"`). Every file that carries a token – `mcp.json` when it holds
+  tokens, and any token file – must be `0600` and readable by uid `65532`,
+  hence the `chmod`/`chown`. Docker/Compose *secrets* are mounted `0444` by
+  default and would be rejected; a bind-mounted file is simpler here.
 - **Share one archive.** The backup writes `./archive`; the MCP mounts the same
   directory (`:ro`). Its `mcp.json` must use the container path:
   `"archive_dir": "/data"`.
-- **Token permissions.** The token file must be mode `0600` (the server refuses
-  anything group/world-readable) *and* readable by uid `65532`, hence the
-  `chown`. Point the server at it either via `"token_file": "/token"` in
-  `mcp.json` or via `DISCORD_TOKEN_FILE` (as in the template). Docker/Compose
-  *secrets* are mounted `0444` by default and would be rejected — a
-  bind-mounted file is simpler here.
 - **Backup and MCP in parallel is fine.** The archive is append-only and the
   reader detects rewrites; a backup running while clients query causes no
   inconsistency. See [mcp.md](mcp.md).
@@ -162,4 +164,4 @@ Points that matter:
 
 - HTTPS to Discord works out of the box (distroless ships CA certificates).
 - The lock file lives at `/data/.lock` – overlapping `docker run` calls exit cleanly like the binary does.
-- No healthcheck needed: the container exits after each sync (exit `0` = ok).
+- No healthcheck needed for the **backup** container: it exits after each sync (exit `0` = ok). The long-running **MCP** service does have one, above.

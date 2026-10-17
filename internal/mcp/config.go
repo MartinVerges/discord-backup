@@ -16,11 +16,14 @@ type Config struct {
 	// GuildID selects one archive when ArchiveDir holds several.
 	GuildID string `json:"guild_id"`
 
-	// TokenFile (or Token) enables live permission lookups. Without it the
-	// server runs purely on the archive's permissions snapshot. The token is
-	// the same bot token the backup uses.
-	TokenFile string `json:"token_file"`
+	// Token (inline) enables live permission lookups. It is the same bot token
+	// the backup uses; without it the server runs purely on the archive's
+	// permissions snapshot. Keeping it in this file is the normal case, which
+	// is why a config that holds any token must be mode 0600. TokenFile is the
+	// alternative for injecting the secret separately (Docker secrets, systemd
+	// credentials); it must be 0600 on its own.
 	Token     string `json:"token"`
+	TokenFile string `json:"token_file"`
 
 	// Deleted is "hide" (default) or "show".
 	Deleted string `json:"deleted"`
@@ -76,7 +79,39 @@ func LoadConfig(path string) (*Config, error) {
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	if c.hasSecrets() {
+		if err := checkSecretFilePerms(path); err != nil {
+			return nil, err
+		}
+	}
 	return &c, nil
+}
+
+// hasSecrets reports whether the config carries a secret: the bot token or any
+// principal's HTTP bearer token.
+func (c *Config) hasSecrets() bool {
+	if strings.TrimSpace(c.Token) != "" {
+		return true
+	}
+	for i := range c.Principals {
+		if strings.TrimSpace(c.Principals[i].Token) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// checkSecretFilePerms refuses a secret-bearing config that others can read, so
+// an inline token is no looser than a token file.
+func checkSecretFilePerms(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("config %s holds tokens and must not be group/world accessible (run: chmod 600 %s)", path, path)
+	}
+	return nil
 }
 
 func (c *Config) validate() error {
@@ -157,19 +192,6 @@ func (c *Config) Settings() (Settings, error) {
 			return s, err
 		}
 		s.Token = tok
-	}
-	// Fall back to the same environment the backup uses, so a container can
-	// share one .env file between the backup and the MCP server.
-	if s.Token == "" {
-		if path := strings.TrimSpace(os.Getenv("DISCORD_TOKEN_FILE")); path != "" {
-			tok, err := readTokenFile(path)
-			if err != nil {
-				return s, err
-			}
-			s.Token = tok
-		} else if tok := strings.TrimSpace(os.Getenv("DISCORD_TOKEN")); tok != "" {
-			s.Token = tok
-		}
 	}
 	dur := func(field, val string, def time.Duration) (time.Duration, error) {
 		if val == "" {
