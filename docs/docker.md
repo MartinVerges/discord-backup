@@ -19,8 +19,10 @@ docker run --rm \
 
 No release yet or want to build yourself? Minimal image (~16 MB): static Go binary on
 distroless (Debian 13), running as non-root (uid 65532).
-The tool is a one-shot cron job, so the container runs one sync per invocation – schedule it
-from the host (cron/systemd), don't keep it running.
+
+The container can run either way: one sync per invocation (scheduled from the
+host) or as a self-scheduling service with `--every`, which needs no cron at all
+– see [Service (no cron)](#service-no-cron).
 
 ## Build
 
@@ -72,6 +74,57 @@ docker run --rm \
 */15 * * * * /usr/bin/docker run --rm --env-file /etc/discord-backup/env -v /var/lib/discord-backup:/data discord-backup --guild YOUR_SERVER_ID --out /data --download-attachments >>/var/log/discord-backup.log 2>&1
 ```
 
+## Service (no cron)
+
+`--every` turns the tool into its own scheduler: it backs up, waits `--every`
+**after** each pass, then runs again, until it is stopped. Compose has no
+scheduler of its own, so this is the way to keep everything in one compose file:
+
+```yaml
+services:
+  backup:
+    image: ghcr.io/martinverges/discord-backup:latest
+    restart: unless-stopped          # comes back after reboot/OOM
+    volumes:
+      - ./archive:/data
+      - ./token:/token:ro
+    command:
+      - --guild
+      - YOUR_SERVER_ID
+      - --out
+      - /data
+      - --token-file
+      - /token
+      - --download-attachments
+      - --every
+      - 15m
+```
+
+Or as a one-liner:
+
+```bash
+docker run -d --restart unless-stopped --name discord-backup \
+  -v "$PWD/archive:/data" \
+  -v "$PWD/token:/token:ro" \
+  ghcr.io/martinverges/discord-backup:latest \
+  --guild YOUR_SERVER_ID --out /data --token-file /token --download-attachments --every 15m
+```
+
+Details:
+
+- The interval is measured **after** each pass finishes, so passes never overlap
+  and a run that takes 10 minutes with `--every 15m` simply starts 15 minutes
+  after it ends (`docker logs discord-backup` logs `every=15m` at start).
+- A failing pass does **not** stop the loop: it is logged and retried on the
+  next tick, so a Discord outage or a temporary network error costs one
+  interval, not the schedule.
+- `SIGINT`/`SIGTERM` (e.g. `docker stop`) ends the loop cleanly with exit `0`.
+- Still safe next to a second instance or a host cron: the lock in
+  `<out>/.lock` makes an overlapping run exit `0` with
+  `another backup run is active, exiting`.
+- `--every` is not combinable with `--list-channels`, and with `--quiet` only
+  warnings/errors reach the log.
+
 ## MCP (read-only access)
 
 The same image serves the MCP endpoint; just pass the subcommand. The MCP
@@ -100,11 +153,13 @@ docker run --rm -p 127.0.0.1:8765:8765 \
 The archive is mounted **read-only** (`:ro`) because the MCP never writes to
 it. See [mcp.md](mcp.md).
 
-### MCP as a service (Compose)
+### Backup + MCP as services (Compose)
 
-The HTTP transport is a normal long-running process, so it can be a service
-with `restart: unless-stopped`. A ready-to-copy template lives in
-[`compose.example.yaml`](../compose.example.yaml):
+Both parts are long-running processes with `restart: unless-stopped`: the
+backup schedules itself with `--every` (see
+[Service (no cron)](#service-no-cron)), the MCP serves HTTP. Compose has no
+built-in scheduler, so nothing else is needed. A ready-to-copy template lives
+in [`compose.example.yaml`](../compose.example.yaml):
 
 ```bash
 cp compose.example.yaml compose.yaml
@@ -113,10 +168,10 @@ chmod 600 mcp.json                    # it holds tokens
 printf '%s' "$BOT_TOKEN" > token && chmod 600 token
 mkdir -p archive
 sudo chown 65532:65532 archive mcp.json token   # container runs as 65532:65532
-docker compose up -d mcp
+docker compose up -d                  # starts backup (--every 15m) and mcp
 ```
 
-The template:
+The MCP service of the template:
 
 ```yaml
 services:
@@ -164,4 +219,4 @@ Points that matter:
 
 - HTTPS to Discord works out of the box (distroless ships CA certificates).
 - The lock file lives at `/data/.lock` – overlapping `docker run` calls exit cleanly like the binary does.
-- No healthcheck needed for the **backup** container: it exits after each sync (exit `0` = ok). The long-running **MCP** service does have one, above.
+- No healthcheck needed for the **backup** container: with `--every` it is alive as long as the loop runs, and a failing pass only logs; the **MCP** service has one, above.

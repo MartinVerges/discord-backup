@@ -1,6 +1,6 @@
 # discord-backup
 
-Incrementally backs up a Discord server to local files. Each invocation syncs everything since the last run – designed for cron every 15–30 minutes.
+Incrementally backs up a Discord server to local files. Each invocation syncs everything since the last run – driven by cron, a systemd timer, or its own `--every` loop.
 
 - **Go, standard library only:** a single binary, no dependencies, runs on Linux, macOS and Windows
 - **No duplicates:** the data file itself is the cursor, no separate state to drift
@@ -25,7 +25,8 @@ go build -o discord-backup .
 # 3. Back up
 ./discord-backup --guild YOUR_SERVER_ID --out ./discord_archive --download-attachments --token-file ~/.discord-backup-token
 
-# 4. Automate (cron) → docs/automation.md
+# 4. Automate: cron/timer, or stay in the foreground → docs/automation.md
+./discord-backup --guild YOUR_SERVER_ID --out ./discord_archive --download-attachments --token-file ~/.discord-backup-token --every 15m
 ```
 
 ## Documentation
@@ -35,10 +36,10 @@ go build -o discord-backup .
 | [docs/installation.md](docs/installation.md) | Building and installing |
 | [docs/bot-setup.md](docs/bot-setup.md) | Creating, inviting and permitting the Discord bot |
 | [docs/usage.md](docs/usage.md) | All options, environment variables, examples |
-| [docs/automation.md](docs/automation.md) | cron, systemd timers, launchd |
+| [docs/automation.md](docs/automation.md) | `--every` service mode, cron, systemd timers, launchd |
 | [docs/archive-format.md](docs/archive-format.md) | File format and querying with `jq` |
 | [docs/mcp.md](docs/mcp.md) | Read-only MCP access, scoped by Discord permissions |
-| [docs/docker.md](docs/docker.md) | Minimal container image and cron usage |
+| [docs/docker.md](docs/docker.md) | Minimal container image, service mode (`--every`) |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Errors and fixes |
 
 ## Example

@@ -1,5 +1,5 @@
-# Example: run the backup on the host and serve the archive read-only over
-# MCP/HTTP as a long-lived service. Copy to compose.yaml and adjust:
+# Example: keep an archive fresh and serve it read-only over MCP/HTTP, both
+# as compose services. Copy to compose.yaml and adjust:
 #
 #   cp compose.example.yaml compose.yaml
 #   cp mcp.example.json mcp.json          # set "archive_dir": "/data"
@@ -15,15 +15,16 @@
 #   sudo chown 65532:65532 archive mcp.json token
 #
 # The MCP reads no environment variables: the bot token comes from mcp.json
-# ("token") or from the file it points to ("token_file"). Only the one-shot
-# backup below takes the token as a flag. See docs/docker.md and docs/mcp.md.
+# ("token") or from the file it points to ("token_file"). Only the backup takes
+# the token as a flag. See docs/docker.md and docs/mcp.md.
 
 services:
-  # One-shot sync. Run it from host cron (recommended) or as a service with a
-  # restart policy other than "no", but not both at once.
+  # Self-scheduling backup: runs a pass, waits --every after it finished, then
+  # runs again. No cron and no host scheduler needed (compose has neither).
+  # Change "15m" to taste; a failing pass is retried on the next tick.
   backup:
     image: ghcr.io/martinverges/discord-backup:latest
-    restart: "no"
+    restart: unless-stopped
     volumes:
       - ./archive:/data
       - ./token:/token:ro
@@ -35,6 +36,8 @@ services:
       - --token-file
       - /token
       - --download-attachments
+      - --every
+      - 15m
 
   # Read-only MCP server over HTTP. Keeps running; the archive is mounted
   # read-only because the MCP never writes to it.

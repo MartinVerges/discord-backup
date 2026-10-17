@@ -33,6 +33,7 @@ The file must have mode `0600` (`chmod 600`), otherwise the tool refuses to star
 | `--attach-max-mb N` | `50` | Max attachment size in MB |
 | `--attach-workers N` | `4` | Parallel attachment downloads |
 | `--skip-empty` | on | Skip channels with no access or zero messages |
+| `--every DURATION` | `0` (once) | Run as a service: wait this long **after** each pass, then back up again |
 | `--list-channels` | off | Show channels as a table and exit |
 | `--version` | off | Print version and exit |
 | `--quiet` | off | Only log warnings and errors |
@@ -62,7 +63,24 @@ discord-backup --guild 123 --include-bots
 
 # Quiet in cron (only check the log on problems)
 discord-backup --guild 123 --quiet
+
+# Self-scheduling service: no cron needed (handy in Docker)
+discord-backup --guild 123 --out /var/lib/discord-backup --every 15m
 ```
+
+## Scheduling
+
+Two equivalent ways to keep an archive fresh:
+
+- **Cron / systemd timer** on the host: one process per tick, exit when done.
+- **`--every` service mode**: one long-running process that backs up, waits
+  `--every` after each pass, then runs again. Passes never overlap, a failing
+  pass is retried on the next tick instead of stopping the loop, and `SIGINT`/
+  `SIGTERM` shuts down cleanly (exit `0`). This is what the Docker Compose
+  template uses, since Compose has no scheduler of its own.
+
+Either way, runs that do overlap are safe: the lock in `<out>/.lock` makes a
+second run exit `0` with `another backup run is active, exiting`.
 
 ## Exit codes
 

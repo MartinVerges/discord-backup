@@ -148,6 +148,7 @@ func run() int {
 		attachMaxMB  = flag.Int("attach-max-mb", 50, "max attachment size in MB")
 		attachWorker = flag.Int("attach-workers", 4, "parallel attachment downloads")
 		skipEmpty    = flag.Bool("skip-empty", true, "skip channels with no access or zero messages")
+		every        = flag.Duration("every", 0, "keep running: wait this long after each pass, then back up again (0 = run once)")
 		listCh       = flag.Bool("list-channels", false, "list backup-relevant channels and exit")
 		quiet        = flag.Bool("quiet", false, "only warnings and errors")
 		showVersion  = flag.Bool("version", false, "print version and exit")
@@ -173,11 +174,15 @@ Examples:
   discord-backup --guild 123456789            # incremental pass (cron)
   discord-backup --guild 123456789 --list-channels
   discord-backup --guild 123456789 --channel general --download-attachments
+  discord-backup --guild 123456789 --every 15m   # self-scheduling service
   discord-backup mcp --config mcp.json        # read-only MCP server (stdio)
 
 Cron (every 15 minutes):
   */15 * * * * DISCORD_TOKEN_FILE=/etc/discord-backup/token \\
       /usr/local/bin/discord-backup --guild 123456789 --out /var/lib/discord-backup >>/var/log/discord-backup.log 2>&1
+
+Service (no cron, e.g. in Docker): use --every, which waits after each pass:
+  discord-backup --guild 123456789 --out /var/lib/discord-backup --every 15m
 
 See docs/mcp.md for permission-scoped, read-only access over MCP.
 `)
@@ -202,6 +207,10 @@ See docs/mcp.md for permission-scoped, read-only access over MCP.
 	}
 	if *limit < 0 {
 		log.Error("--limit must be >= 0")
+		return 1
+	}
+	if *every > 0 && *listCh {
+		log.Error("--every cannot be combined with --list-channels")
 		return 1
 	}
 	var since time.Time
@@ -234,15 +243,40 @@ See docs/mcp.md for permission-scoped, read-only access over MCP.
 		SkipEmpty:           *skipEmpty,
 		ListChannels:        *listCh,
 	}
-	if err := backup.Run(ctx, cfg); err != nil {
-		if ctx.Err() != nil {
-			log.Error("interrupted")
-			return 130
+	if *every <= 0 {
+		if err := backup.Run(ctx, cfg); err != nil {
+			if ctx.Err() != nil {
+				log.Error("interrupted")
+				return 130
+			}
+			log.Error("backup failed", "err", err)
+			return 1
 		}
-		log.Error("backup failed", "err", err)
-		return 1
+		return 0
 	}
-	return 0
+
+	// Service mode: run a pass, then wait --every after it finished (not from
+	// its start), so passes never overlap. A failing pass is logged and retried
+	// on the next tick instead of ending the loop, so a transient Discord
+	// outage does not stop the schedule.
+	log.Info("running as a service", "every", every.String())
+	for {
+		if err := backup.Run(ctx, cfg); err != nil {
+			if ctx.Err() != nil {
+				log.Info("stopping")
+				return 0
+			}
+			log.Error("backup failed", "err", err, "retry_in", every.String())
+		}
+		t := time.NewTimer(*every)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			log.Info("stopping")
+			return 0
+		case <-t.C:
+		}
+	}
 }
 
 // runMCP runs the read-only, permission-scoped MCP server.
