@@ -177,8 +177,8 @@ Points that matter:
   binds, and a broken config is reported as unhealthy instead of unnoticed.
 - **One config, one secret rule.** No environment variables, no token file: the
   bot token and the principals' bearer tokens all sit in `config.json`. Because
-  it holds tokens it must be mode `0600` **and** readable by uid `65532`, hence
-  the `chmod`/`chown`. Docker/Compose *secrets* are mounted `0444` by default
+  it holds tokens it must be mode `0600` **and** owned by the uid the process
+  runs as (see below). Docker/Compose *secrets* are mounted `0444` by default
   and would be rejected; a bind-mounted file is simpler here.
 - **Only your own section is enforced.** The backup validates `backup.*`, the
   MCP validates `mcp.*`; an unfinished `mcp` section cannot stop the backup.
@@ -195,6 +195,43 @@ Points that matter:
 - **Exposure.** `127.0.0.1:8765` keeps it local. To expose it, terminate TLS in
   a reverse proxy and keep the per-principal bearer tokens; there is no TLS or
   additional auth in the server itself.
+
+### Permissions of `config.json` (the usual first failure)
+
+The image runs as uid/gid `65532` (`nonroot`), **not** as root, so the bind mount
+must be readable by that user. The two errors that follow from this are:
+
+| Message | Cause | Fix |
+|---|---|---|
+| `… holds tokens and must not be group/world accessible` | mode is `0644`/`0664` | `chmod 600 config.json` |
+| `read /etc/discord-backup.json: permission denied as uid 65532` | mode is fine, but the file belongs to your login | `sudo chown 65532:65532 config.json` |
+
+`chmod 600` alone is not enough – it removes exactly the access the container was
+using. Do both, plus the archive the backup writes to:
+
+```bash
+chmod 600 config.json
+sudo chown 65532:65532 config.json
+sudo chown -R 65532:65532 archive
+```
+
+**Alternative:** run the containers as your own user and keep the file owned by
+you:
+
+```yaml
+services:
+  backup:
+    user: "1000:1000"     # id -u:id -g
+  mcp:
+    user: "1000:1000"     # the same uid as the backup
+```
+
+`chmod 600` still applies, and `archive/` must belong to that uid too.
+
+After the container started once, the file stays owned by 65532 – if you edit it
+in place, ownership and mode are preserved, so no repeat is needed. If a tool
+rewrote it (`cp` from somewhere else, rsync, a UI editor that recreates files),
+re-run the `chmod`/`chown`.
 
 ## Notes
 

@@ -8,8 +8,13 @@
 #     #   "mcp": {...}                  (principals + their bearer tokens)
 #   chmod 600 config.json               # it holds tokens
 #   mkdir -p archive
-#   sudo chown 65532:65532 archive config.json   # container runs as 65532:65532
+#   sudo chown 65532:65532 config.json archive   # image runs as 65532:65532
 #   docker compose up -d
+#
+# Ownership is the one thing that bites: the container is NOT root, so a
+# 0600 config.json owned by your login cannot be read ("permission denied"),
+# and a 0644 one is refused as insecure. Either chown to 65532:65532 (above) or
+# uncomment "user:" below to run the containers as your own uid instead.
 #
 # See docs/docker.md and docs/mcp.md.
 
@@ -19,6 +24,7 @@ services:
   backup:
     image: ghcr.io/martinverges/discord-backup:latest
     restart: unless-stopped
+    # user: "1000:1000"        # alternative to chown 65532:65532 (use id -u:id -g)
     volumes:
       - ./archive:/data
       - ./config.json:/etc/discord-backup.json:ro
@@ -31,6 +37,7 @@ services:
   mcp:
     image: ghcr.io/martinverges/discord-backup:latest
     restart: unless-stopped
+    # user: "1000:1000"        # must match the owner of config.json/archive
     volumes:
       - ./archive:/data:ro
       - ./config.json:/etc/discord-backup.json:ro

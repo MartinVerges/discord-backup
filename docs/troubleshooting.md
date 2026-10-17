@@ -48,6 +48,12 @@ catches up. If the message persists, a process is stuck (`ps aux | grep discord-
   identity mapping (name/email/alias → `discord_id`).
 - `unknown field "..."`: a typo – unknown keys are rejected on purpose, so a
   misspelled setting fails loudly instead of being ignored.
+- `config … holds tokens and must not be group/world accessible`: `chmod 600 config.json`.
+- `read /etc/discord-backup.json: permission denied as uid 65532`: the mode is
+  fine, but the file belongs to another user – the container does not run as
+  root. `sudo chown 65532:65532 config.json` (or run the container with
+  `user: "1000:1000"`). Both messages and their fixes are in
+  [docker.md](docker.md#permissions-of-configjson-the-usual-first-failure).
 - Edits to `config.json` take effect only after a restart (the file is read once
   at start-up): `docker compose up -d --force-recreate backup`, or restart the
   systemd unit/cron never needs it.

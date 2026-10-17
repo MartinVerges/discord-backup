@@ -46,8 +46,11 @@ discord-backup              # one backup pass, ./config.json
 ```
 
 A config that contains a token (the bot token or any principal token) **must be
-mode `0600`**; the tool refuses to start otherwise. Unknown keys are rejected,
-so a typo is an error instead of a silently ignored setting.
+mode `0600`**; the tool refuses to start otherwise. It must also be readable by
+the user the process runs as – in a container that is usually the trap, see
+[docker.md](docker.md#permissions-of-configjson-the-usual-first-failure).
+Unknown keys are rejected, so a typo is an error instead of a silently ignored
+setting.
 
 ### Top level
 

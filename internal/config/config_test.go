@@ -137,9 +137,29 @@ func TestLoadSecretPermissions(t *testing.T) {
 		if !strings.Contains(err.Error(), "chmod 600") {
 			t.Fatalf("%s: error should point at the fix, got %v", name, err)
 		}
+		if !strings.Contains(err.Error(), "uid") {
+			t.Fatalf("%s: error should name the ownership trap, got %v", name, err)
+		}
 	}
 	if _, err := Load(writeConfig(t, "plain.json", noSecrets, 0o644)); err != nil {
 		t.Fatalf("secret-free config at 0644: %v", err)
+	}
+}
+
+// TestLoadUnreadableHint covers the other half of the container trap: a 0600
+// config owned by someone else cannot be opened at all, and the error must say
+// which uid it runs as and how to fix it.
+func TestLoadUnreadableHint(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permissions")
+	}
+	p := writeConfig(t, "locked.json", `{"guild_id":"G","archive_dir":"/data","token":"t"}`, 0o000)
+	_, err := Load(p)
+	if err == nil {
+		t.Fatal("an unreadable config must fail")
+	}
+	if !strings.Contains(err.Error(), "permission denied") || !strings.Contains(err.Error(), "uid") {
+		t.Fatalf("error should name the uid and the fix, got: %v", err)
 	}
 }
 

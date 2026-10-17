@@ -82,6 +82,8 @@ Docker (with healthcheck), see [docs/docker.md](docs/docker.md) and
 
 ```bash
 docker pull ghcr.io/martinverges/discord-backup:latest
+chmod 600 config.json
+sudo chown 65532:65532 config.json archive   # the image is not root
 docker run --rm -v "$PWD/archive:/data" \
   -v "$PWD/config.json:/etc/discord-backup.json:ro" \
   ghcr.io/martinverges/discord-backup:latest --config /etc/discord-backup.json

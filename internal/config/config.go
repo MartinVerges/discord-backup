@@ -10,7 +10,9 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -140,21 +142,42 @@ type MCPOptions struct {
 }
 
 // Load reads and validates the configuration file.
+//
+// Both permission failures are explained in the error, because in a container
+// the usual cause is ownership rather than the mode: the shipped image runs as
+// uid 65532, so a 0600 file owned by root is simply unreadable.
 func Load(path string) (*Options, error) {
-	raw, err := os.ReadFile(path)
+	fi, err := os.Stat(path)
 	if err != nil {
 		return nil, err
+	}
+	if fi.IsDir() {
+		return nil, fmt.Errorf("%s is a directory, want the configuration file", path)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, readErr(path, err)
 	}
 	c, opts, err := parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if c.hasSecrets() {
-		if err := checkSecretFilePerms(path); err != nil {
+		if err := checkSecretFilePerms(path, fi.Mode().Perm()); err != nil {
 			return nil, err
 		}
 	}
 	return opts, nil
+}
+
+// readErr turns "permission denied" into something actionable: it names the uid
+// the process runs as and the chown that fixes it.
+func readErr(path string, err error) error {
+	if errors.Is(err, fs.ErrPermission) {
+		return fmt.Errorf("read %s: permission denied as uid %d (the file must be readable/owned by that user; in a container: sudo chown %d:%d %s)",
+			path, os.Geteuid(), os.Geteuid(), os.Getegid(), path)
+	}
+	return fmt.Errorf("read %s: %w", path, err)
 }
 
 // Parse validates a configuration document without touching the filesystem
@@ -394,14 +417,13 @@ func (c *Config) hasSecrets() bool {
 	return false
 }
 
-// checkSecretFilePerms refuses a secret-bearing config that others can read.
-func checkSecretFilePerms(path string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("config %s holds tokens and must not be group/world accessible (run: chmod 600 %s)", path, path)
+// checkSecretFilePerms refuses a secret-bearing config that others can read, and
+// names the ownership trap on the way (a 0600 file owned by another user is
+// unreadable inside a container).
+func checkSecretFilePerms(path string, perm fs.FileMode) error {
+	if perm&0o077 != 0 {
+		return fmt.Errorf("config %s holds tokens and must not be group/world accessible (chmod 600 %s); the process (uid %d) must own it – in a container: sudo chown %d:%d %s",
+			path, path, os.Geteuid(), os.Geteuid(), os.Getegid(), path)
 	}
 	return nil
 }
