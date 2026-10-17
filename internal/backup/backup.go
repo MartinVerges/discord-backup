@@ -27,6 +27,7 @@ import (
 	"discord-backup/internal/attach"
 	"discord-backup/internal/discord"
 	"discord-backup/internal/lock"
+	"discord-backup/internal/perms"
 	"discord-backup/internal/store"
 )
 
@@ -97,6 +98,7 @@ type ThreadInfo struct {
 	Name         string `json:"name"`
 	ParentID     string `json:"parent_id"`
 	OwnerID      string `json:"owner_id,omitempty"`
+	Type         int    `json:"type"` // 10 announcement, 11 public, 12 private thread
 	Archived     bool   `json:"archived"`
 	Locked       bool   `json:"locked"`
 	MessageCount int    `json:"message_count"`
@@ -299,10 +301,66 @@ func (r *Runner) run(ctx context.Context) error {
 	if err := store.WriteJSON(filepath.Join(serverDir, "channels.json"), index); err != nil {
 		return fmt.Errorf("write channels index: %w", err)
 	}
+	// Permission snapshot (roles + channel overwrites + member roles). Best
+	// effort: a failure must not abort the run, the archive is still valid.
+	if err := r.writePermissionSnapshot(ctx, guild, all, serverDir); err != nil {
+		r.log.Warn("permission snapshot failed, continuing", "err", err)
+	}
 	r.log.Info("done",
 		"channels", len(index),
 		"attachments_new", attOK, "attachments_cached", attSkip, "attachments_failed", attFail,
 		"server", serverDir)
+	return nil
+}
+
+// writePermissionSnapshot captures roles, channel overwrites and member
+// roles so the archive is self-describing: user-scoped access (MCP) can be
+// computed offline, even when Discord is unreachable. Rewritten each run,
+// atomically.
+func (r *Runner) writePermissionSnapshot(ctx context.Context, guild *discord.Guild, all []discord.Channel, serverDir string) error {
+	snap := perms.NewSnapshot(guild.ID)
+	snap.SetChannels(all)
+
+	if roles, err := r.api.Roles(ctx, guild.ID); err != nil {
+		r.log.Warn("roles unavailable, snapshot without role permissions", "err", err)
+	} else {
+		snap.Roles = roles
+	}
+
+	// Member roles: only enumerated for guilds small enough to page through
+	// (same threshold as the member count). Larger guilds rely on a live
+	// lookup at query time.
+	if guild.ApproximateMembers > 0 && guild.ApproximateMembers <= 10000 {
+		after := ""
+		for {
+			members, err := r.api.ListMembers(ctx, guild.ID, after, 1000)
+			if err != nil {
+				var fe *discord.ForbiddenError
+				if errors.As(err, &fe) {
+					r.log.Warn("members forbidden (missing Server Members intent?), snapshot without member roles")
+				} else {
+					r.log.Warn("members unavailable, snapshot without member roles", "err", err)
+				}
+				break
+			}
+			if len(members) == 0 {
+				break
+			}
+			for _, m := range members {
+				snap.Members[m.User.ID] = perms.MemberRoles{Username: m.User.Username, Roles: m.Roles}
+				after = m.User.ID
+			}
+			if len(members) < 1000 {
+				break
+			}
+		}
+	}
+
+	if err := perms.SaveSnapshot(filepath.Join(serverDir, "permissions.json"), snap); err != nil {
+		return err
+	}
+	r.log.Info("permission snapshot written",
+		"roles", len(snap.Roles), "channels", len(snap.Channels), "members", len(snap.Members))
 	return nil
 }
 
@@ -1579,7 +1637,7 @@ func (r *Runner) backupThreads(ctx context.Context, dir string, ch discord.Chann
 		}
 		ti := ThreadInfo{
 			ID: t.ID, Name: t.Name, ParentID: parent, OwnerID: owner,
-			Archived: archived, Locked: locked,
+			Type: t.Type, Archived: archived, Locked: locked,
 			MessageCount: int(pm) + stats.added,
 			EditCount:    int(pe) + stats.edited,
 			DeleteCount:  int(pd) + stats.deleted,

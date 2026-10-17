@@ -6,9 +6,11 @@ Incrementally backs up a Discord server to local files. Each invocation syncs ev
 - **No duplicates:** the data file itself is the cursor, no separate state to drift
 - **Complete:** channels, threads (active + archived), pins, attachments, edits and deletes
 - **Secure:** token never passed as an argument, only Discord's CDN is fetched, filenames are sanitized
+- **Queryable:** optional read-only [MCP server](docs/mcp.md) that only shows each user what their Discord permissions allow
 
 ```
 Channels · Threads · Pins · Attachments → JSONL files → cron → done
+                                                       ↘ MCP (permission-scoped)
 ```
 
 ## Quick start
@@ -35,6 +37,7 @@ go build -o discord-backup .
 | [docs/usage.md](docs/usage.md) | All options, environment variables, examples |
 | [docs/automation.md](docs/automation.md) | cron, systemd timers, launchd |
 | [docs/archive-format.md](docs/archive-format.md) | File format and querying with `jq` |
+| [docs/mcp.md](docs/mcp.md) | Read-only MCP access, scoped by Discord permissions |
 | [docs/docker.md](docs/docker.md) | Minimal container image and cron usage |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Errors and fixes |
 
@@ -48,6 +51,34 @@ time=... level=INFO msg="active threads" count=231
 time=... level=INFO msg="channel done" channel=#random new=0 edits=0 deleted=0 threads=10 pinned=5 status=ok
 time=... level=INFO msg=done channels=75 attachments_new=12 attachments_cached=340 attachments_failed=0
 ```
+
+## MCP access (read-only, permission-scoped)
+
+Serve the archive to an LLM or any MCP client, limited to what the caller may
+read in Discord:
+
+```bash
+# 1. Describe who may connect (name / email / discord_id → Discord user)
+cat > mcp.json <<'JSON'
+{
+  "archive_dir": "/var/lib/discord-backup",
+  "token_file": "/etc/discord-backup/token",
+  "principals": [
+    { "name": "martin", "discord_id": "123456789012345678" }
+  ]
+}
+JSON
+
+# 2. Run (stdio for Claude Desktop/Code, --http for remote)
+./discord-backup mcp --config mcp.json
+```
+
+Tools: `whoami`, `list_channels`, `list_threads`, `search_messages`,
+`get_message`, `get_context`, `list_authors`. Access is computed from Discord's
+permissions, live with the archive's `permissions.json` as offline fallback.
+Details: [docs/mcp.md](docs/mcp.md). To run it as a long-lived HTTP service in
+Docker (with healthcheck), see [docs/docker.md](docs/docker.md) and
+[`compose.example.yaml`](compose.example.yaml).
 
 ## Docker
 

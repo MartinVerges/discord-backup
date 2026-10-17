@@ -32,20 +32,48 @@ type ThreadMetadata struct {
 }
 
 type Channel struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	Type         int             `json:"type"`
-	Topic        *string         `json:"topic"`
-	Position     int             `json:"position"`
-	ParentID     *string         `json:"parent_id"`
-	OwnerID      *string         `json:"owner_id"`
-	MessageCount *int            `json:"message_count"`
-	ThreadMeta   *ThreadMetadata `json:"thread_metadata"`
+	ID                   string                `json:"id"`
+	Name                 string                `json:"name"`
+	Type                 int                   `json:"type"`
+	Topic                *string               `json:"topic"`
+	Position             int                   `json:"position"`
+	ParentID             *string               `json:"parent_id"`
+	OwnerID              *string               `json:"owner_id"`
+	MessageCount         *int                  `json:"message_count"`
+	ThreadMeta           *ThreadMetadata       `json:"thread_metadata"`
+	PermissionOverwrites []PermissionOverwrite `json:"permission_overwrites"`
+}
+
+// PermissionOverwrite is one channel permission overwrite. ID is a role ID,
+// a user ID or the guild ID (the @everyone overwrite); Type is 0 for role,
+// 1 for member. Allow/Deny are decimal permission bitfields, exactly as the
+// API returns them.
+type PermissionOverwrite struct {
+	ID    string `json:"id"`
+	Type  int    `json:"type"`
+	Allow string `json:"allow"`
+	Deny  string `json:"deny"`
+}
+
+// Overwrite types.
+const (
+	OverwriteRole   = 0
+	OverwriteMember = 1
+)
+
+// Role is a guild role, needed to compute member permissions.
+type Role struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Permissions string `json:"permissions"` // decimal bitfield
+	Position    int    `json:"position"`
+	Managed     bool   `json:"managed"`
 }
 
 type Member struct {
-	User User    `json:"user"`
-	Nick *string `json:"nick"`
+	User  User     `json:"user"`
+	Nick  *string  `json:"nick"`
+	Roles []string `json:"roles"`
 }
 
 // Envelope is the minimal typed view of a message used for filtering,

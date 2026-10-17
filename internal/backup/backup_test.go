@@ -16,6 +16,7 @@ import (
 
 	"discord-backup/internal/attach"
 	"discord-backup/internal/discord"
+	"discord-backup/internal/perms"
 	"discord-backup/internal/store"
 )
 
@@ -24,6 +25,8 @@ type fakeDiscord struct {
 	msgs    []*fakeMsg            // channel C, ascending by id
 	threads []fakeThread          // active guild threads
 	tmsgs   map[string][]*fakeMsg // thread messages by thread id
+	roles   []any                 // /guilds/G/roles
+	members []any                 // /guilds/G/members
 }
 
 type fakeThread struct {
@@ -49,10 +52,20 @@ func (f *fakeDiscord) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case p == "/users/@me":
 		write(map[string]any{"id": "BOT", "username": "archiver", "bot": true})
+	case p == "/guilds/G/roles":
+		if f.roles == nil {
+			write([]any{})
+			return
+		}
+		write(f.roles)
 	case strings.HasPrefix(p, "/guilds/G/members"):
-		write([]any{})
+		if f.members == nil {
+			write([]any{})
+			return
+		}
+		write(f.members)
 	case p == "/guilds/G":
-		write(map[string]any{"id": "G", "name": "Test Guild", "approximate_member_count": 0})
+		write(map[string]any{"id": "G", "name": "Test Guild", "approximate_member_count": len(f.members)})
 	case p == "/guilds/G/channels":
 		write([]any{map[string]any{"id": "C", "name": "general", "type": 0, "position": 0}})
 	case p == "/channels/C/pins":
@@ -598,6 +611,49 @@ func TestMissingInLog(t *testing.T) {
 	items, n, err = missingInLog(filepath.Join(dir, "edits.jsonl"), dir)
 	if err != nil || len(items) != 0 || n != 0 {
 		t.Fatalf("missing file: items=%d n=%d err=%v", len(items), n, err)
+	}
+}
+
+func TestPermissionSnapshot(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	fake := &fakeDiscord{
+		msgs: []*fakeMsg{{id: msgID(now.Add(-time.Hour)), content: "hi", ts: now.Add(-time.Hour)}},
+		roles: []any{
+			map[string]any{"id": "G", "name": "@everyone", "permissions": "1024"}, // VIEW_CHANNEL
+			map[string]any{"id": "R1", "name": "readers", "permissions": "65536"}, // READ_MESSAGE_HISTORY
+		},
+		members: []any{
+			map[string]any{"user": map[string]any{"id": "U1", "username": "alice", "bot": false}, "roles": []any{"R1"}},
+			map[string]any{"user": map[string]any{"id": "U2", "username": "bob", "bot": false}, "roles": []any{}},
+		},
+	}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	out := t.TempDir()
+
+	if err := Run(context.Background(), testCfg(t, srv.URL, out)); err != nil {
+		t.Fatal(err)
+	}
+	snapPath := filepath.Join(out, "server_G", "permissions.json")
+	snap, err := perms.LoadSnapshot(snapPath)
+	if err != nil || snap == nil {
+		t.Fatalf("load snapshot: %v %v", snap, err)
+	}
+	if len(snap.Roles) != 2 || len(snap.Channels) != 1 || len(snap.Members) != 2 {
+		t.Fatalf("snapshot contents: roles=%d channels=%d members=%d",
+			len(snap.Roles), len(snap.Channels), len(snap.Members))
+	}
+	// alice has READ_MESSAGE_HISTORY via R1 -> can read C.
+	if allowed := snap.AllowedChannels("U1"); !allowed["C"] {
+		t.Fatalf("alice should read C, allowed=%v", allowed)
+	}
+	// bob lacks READ_MESSAGE_HISTORY -> cannot read C.
+	if allowed := snap.AllowedChannels("U2"); allowed["C"] {
+		t.Fatalf("bob must not read C, allowed=%v", allowed)
+	}
+	// unknown user -> nothing.
+	if allowed := snap.AllowedChannels("U9"); allowed["C"] {
+		t.Fatalf("unknown user must see nothing, allowed=%v", allowed)
 	}
 }
 

@@ -11,13 +11,12 @@
 .token
 *.token
 DISCORD_TOKEN*
+mcp.json
+compose.yaml
+/token
+.env
 
 # OS / editor
 .DS_Store
 .idea/
 .vscode/
-
-# Token
-.token
-/archive/
-

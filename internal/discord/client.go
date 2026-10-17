@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +32,11 @@ const (
 	ChannelNews       = 5 // announcement channel
 	ChannelStageVoice = 13
 	ChannelForum      = 15
+
+	// Thread channel types.
+	ChannelAnnouncementThread = 10
+	ChannelPublicThread       = 11
+	ChannelPrivateThread      = 12
 )
 
 // Client is a rate-limit aware Discord REST client. It is safe for
@@ -294,6 +300,41 @@ func (c *Client) ListChannels(ctx context.Context, guildID string) ([]Channel, e
 		return nil, err
 	}
 	return out, nil
+}
+
+// Roles returns all roles of a guild (used for permission computation).
+func (c *Client) Roles(ctx context.Context, guildID string) ([]Role, error) {
+	var out []Role
+	if err := c.get(ctx, "/guilds/"+guildID+"/roles", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Member fetches a single guild member, including the role IDs needed to
+// compute that member's channel permissions.
+func (c *Client) Member(ctx context.Context, guildID, userID string) (*Member, error) {
+	var m Member
+	if err := c.get(ctx, "/guilds/"+guildID+"/members/"+userID, nil, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// ThreadMember reports whether a user is a member of a thread. Discord
+// returns 404 when the user is not a member (which is not an error here).
+// Used to gate private-thread access when the archive alone cannot prove it.
+func (c *Client) ThreadMember(ctx context.Context, channelID, userID string) (bool, error) {
+	var out struct{}
+	err := c.get(ctx, "/channels/"+channelID+"/thread-members/"+userID, nil, &out)
+	if err != nil {
+		var nf *NotFoundError
+		if errors.As(err, &nf) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // ListMessages returns up to 100 messages. after/before are message IDs,

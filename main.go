@@ -10,9 +10,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"time"
 
 	"discord-backup/internal/backup"
+	"discord-backup/internal/mcp"
 )
 
 type strList []string
@@ -32,7 +35,53 @@ func (s *strList) Set(v string) error { *s = append(*s, v); return nil }
 var version = "dev"
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "mcp":
+			os.Exit(runMCP(os.Args[2:]))
+		case "healthcheck":
+			os.Exit(runHealthcheck(os.Args[2:]))
+		}
+	}
 	os.Exit(run())
+}
+
+// runHealthcheck probes a running MCP HTTP endpoint and exits 0 on success.
+// It exists so a container healthcheck works on distroless, which ships no
+// shell, curl or wget.
+func runHealthcheck(args []string) int {
+	fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	url := fs.String("url", "http://127.0.0.1:8765/healthz", "health endpoint to probe")
+	timeout := fs.Duration("timeout", 3*time.Second, "request timeout")
+	fs.Usage = func() {
+		fmt.Fprint(os.Stderr, `discord-backup healthcheck: exit 0 when the MCP HTTP endpoint answers.
+
+Usage:
+  discord-backup healthcheck --url http://127.0.0.1:8765/healthz
+
+Options:
+  --url URL        health endpoint to probe (default http://127.0.0.1:8765/healthz)
+  --timeout dur    request timeout (default 3s)
+`)
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	resp, err := (&http.Client{Timeout: *timeout}).Get(*url)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "healthcheck: %s\n", resp.Status)
+		return 1
+	}
+	return 0
 }
 
 // printFlags prints all flags with double-dash names (unlike the stdlib's
@@ -110,6 +159,8 @@ func run() int {
 
 Usage:
   discord-backup --guild GUILD_ID [options]
+  discord-backup mcp --config mcp.json [--principal NAME | --http [--addr ADDR]]
+  discord-backup healthcheck --url http://127.0.0.1:8765/healthz
 
 Token (pick one):
   DISCORD_TOKEN env var, or --token-file PATH (file with mode 0600).
@@ -122,10 +173,13 @@ Examples:
   discord-backup --guild 123456789            # incremental pass (cron)
   discord-backup --guild 123456789 --list-channels
   discord-backup --guild 123456789 --channel general --download-attachments
+  discord-backup mcp --config mcp.json        # read-only MCP server (stdio)
 
 Cron (every 15 minutes):
   */15 * * * * DISCORD_TOKEN_FILE=/etc/discord-backup/token \\
       /usr/local/bin/discord-backup --guild 123456789 --out /var/lib/discord-backup >>/var/log/discord-backup.log 2>&1
+
+See docs/mcp.md for permission-scoped, read-only access over MCP.
 `)
 	}
 	flag.Parse()
@@ -191,6 +245,121 @@ Cron (every 15 minutes):
 	return 0
 }
 
+// runMCP runs the read-only, permission-scoped MCP server.
+func runMCP(args []string) int {
+	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	configPath := fs.String("config", os.Getenv("DISCORD_MCP_CONFIG"), "path to the MCP config JSON (or DISCORD_MCP_CONFIG)")
+	principal := fs.String("principal", "", "principal (name/email/discord_id) for the stdio transport")
+	httpMode := fs.Bool("http", false, "serve the HTTP transport instead of stdio")
+	addr := fs.String("addr", "", "HTTP listen address (default: config http_addr, else 127.0.0.1:8765)")
+	quiet := fs.Bool("quiet", false, "only warnings and errors")
+	showVersion := fs.Bool("version", false, "print version and exit")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `discord-backup mcp: read-only MCP access to an archive, scoped by
+the caller's Discord channel permissions.
+
+Usage:
+  discord-backup mcp --config mcp.json [--principal NAME]
+  discord-backup mcp --config mcp.json --http [--addr 127.0.0.1:8765]
+
+Options:
+`)
+		fs.VisitAll(func(f *flag.Flag) {
+			line := "  --" + f.Name
+			if _, isBool := f.Value.(interface{ IsBoolFlag() bool }); !isBool {
+				line += " string"
+			}
+			fmt.Fprintln(os.Stderr, line)
+			fmt.Fprintln(os.Stderr, "    \t"+f.Usage)
+		})
+		fmt.Fprintf(os.Stderr, `
+The archive (server_<id>/) must exist; permissions.json inside it is the
+offline fallback when Discord is unreachable. See docs/mcp.md.
+`)
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if *showVersion {
+		fmt.Println(version)
+		return 0
+	}
+	if *configPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --config is required (see docs/mcp.md)")
+		return 2
+	}
+	level := slog.LevelInfo
+	if *quiet {
+		level = slog.LevelWarn
+	}
+	// Diagnostics go to stderr so stdout stays a clean JSON-RPC channel.
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+
+	cfg, err := mcp.LoadConfig(*configPath)
+	if err != nil {
+		log.Error("config", "err", err)
+		return 1
+	}
+	settings, err := cfg.Settings()
+	if err != nil {
+		log.Error("config", "err", err)
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	srv, err := mcp.New(ctx, settings, log)
+	if err != nil {
+		log.Error("open archive", "err", err)
+		return 1
+	}
+
+	if *httpMode {
+		listen := *addr
+		if listen == "" {
+			listen = settings.HTTPAddr
+		}
+		if listen == "" {
+			listen = "127.0.0.1:8765"
+		}
+		withToken := 0
+		for _, p := range settings.Principals {
+			if p.Token != "" {
+				withToken++
+			}
+		}
+		if withToken == 0 {
+			log.Error("http transport needs at least one principal with a \"token\"")
+			return 1
+		}
+		if err := srv.ServeHTTP(ctx, listen, log); err != nil {
+			log.Error("http server", "err", err)
+			return 1
+		}
+		return 0
+	}
+
+	pr, err := settings.StdioPrincipal(*principal)
+	if err != nil {
+		log.Error("principal", "err", err)
+		return 1
+	}
+	if settings.Token == "" {
+		log.Info("running in snapshot-only mode (no token configured); set token_file for live permission refresh")
+	}
+	log.Info("mcp stdio ready", "principal", pr.Name, "discord_id", pr.DiscordID, "archive", settings.ArchiveDir)
+	if err := srv.ServeStdio(ctx, pr); err != nil {
+		log.Error("stdio", "err", err)
+		return 1
+	}
+	return 0
+}
+
 // loadToken reads the token from a file (preferred) or the environment.
 // The file must not be world-readable.
 // parseSince accepts an RFC3339 timestamp or a plain YYYY-MM-DD date
@@ -207,16 +376,16 @@ func parseSince(s string) (time.Time, error) {
 
 func loadToken(path string) (string, error) {
 	if path != "" {
-		raw, err := os.ReadFile(path)
+		fi, err := os.Stat(path)
 		if err != nil {
 			return "", fmt.Errorf("read token file: %w", err)
 		}
-		fi, err := os.Stat(path)
-		if err != nil {
-			return "", err
-		}
 		if fi.Mode().Perm()&0o077 != 0 {
 			return "", fmt.Errorf("token file %s must not be group/world accessible (run: chmod 600 %s)", path, path)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read token file: %w", err)
 		}
 		if t := strings.TrimSpace(string(raw)); t != "" {
 			return t, nil

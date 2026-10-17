@@ -1,0 +1,62 @@
+# Example: run the backup on the host and serve the archive read-only over
+# MCP/HTTP as a long-lived service. Copy to compose.yaml and adjust:
+#
+#   cp compose.example.yaml compose.yaml
+#   cp mcp.example.json mcp.json          # set "archive_dir": "/data"
+#   printf '%s' "$BOT_TOKEN" > token && chmod 600 token
+#
+# The container runs as uid:gid 65532:65532, so the bind-mounted paths must be
+# readable/writable by that user:
+#
+#   mkdir -p archive
+#   sudo chown 65532:65532 archive token
+#
+# See docs/docker.md and docs/mcp.md.
+
+services:
+  # One-shot sync. Run it from host cron (recommended) or as a service with a
+  # restart policy other than "no", but not both at once.
+  backup:
+    image: ghcr.io/martinverges/discord-backup:latest
+    restart: "no"
+    volumes:
+      - ./archive:/data
+      - ./token:/token:ro
+    command:
+      - --guild
+      - YOUR_SERVER_ID
+      - --out
+      - /data
+      - --token-file
+      - /token
+      - --download-attachments
+
+  # Read-only MCP server over HTTP. Keeps running; the archive is mounted
+  # read-only because the MCP never writes to it.
+  mcp:
+    image: ghcr.io/martinverges/discord-backup:latest
+    restart: unless-stopped
+    environment:
+      # Used only when mcp.json sets neither "token" nor "token_file".
+      DISCORD_TOKEN_FILE: /token
+    volumes:
+      - ./archive:/data:ro
+      - ./mcp.json:/etc/mcp.json:ro
+      - ./token:/token:ro
+    command:
+      - mcp
+      - --config
+      - /etc/mcp.json
+      - --http
+      - --addr
+      - 0.0.0.0:8765
+    ports:
+      # Keep it on localhost; put a TLS reverse proxy in front to expose it.
+      - "127.0.0.1:8765:8765"
+    healthcheck:
+      # distroless has no shell/curl, so the binary probes its own endpoint.
+      test: ["CMD", "/usr/local/bin/discord-backup", "healthcheck", "--url", "http://127.0.0.1:8765/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

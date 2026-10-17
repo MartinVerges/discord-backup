@@ -2,7 +2,11 @@
 
 ```
 discord-backup --guild GUILD_ID [options]
+discord-backup mcp --config mcp.json [--principal NAME | --http]
 ```
+
+`discord-backup mcp` serves the archive read-only over MCP, limited to each
+caller's Discord permissions – see [mcp.md](mcp.md).
 
 ## Token (pick one)
 

@@ -6,6 +6,7 @@
   server_<guildID>/
     server_info.json             # name, member count, timestamp
     channels.json                # index: id, name, counters, status
+    permissions.json             # permission snapshot (roles, overwrites, member roles)
     channel_<id>/
       channel_info.json          # name, topic, category, counters
       messages.jsonl             # all messages, oldest first (append-only)
@@ -42,6 +43,8 @@ Each line is the **original Discord message object** – stickers, polls, embeds
 - The first run fetches the **complete** history (paged backwards in batches of 100); follow-up runs only fetch what is newer than the stored tip.
 - Pins are an index (`pins.json`); their content is already in `messages.jsonl` – unless it predates the archive, in which case it lives in `pins_backfill.jsonl`.
 - `channels.json` / `channel_info.json` / `thread_info.json` are rewritten each run (counters, status, timestamp).
+- `permissions.json` is a point-in-time snapshot of the guild's roles, every channel's permission overwrites and each member's role IDs. It lets the [MCP server](mcp.md) enforce Discord permissions **offline**, without talking to Discord. It is rewritten each run (atomically) and its failure never aborts a backup.
+- `thread_info.json` carries a `type` (10 announcement, 11 public, 12 private). Threads archived by an older version have no type and are treated as private (hidden) by the MCP until the next run records it.
 
 ## Querying
 
