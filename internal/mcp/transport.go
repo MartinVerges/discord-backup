@@ -11,11 +11,13 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"discord-backup/internal/config"
 )
 
 // ServeStdio runs the newline-delimited JSON-RPC loop used by local MCP
 // clients (Claude Desktop, Claude Code, ...) on stdin/stdout.
-func (s *Server) ServeStdio(ctx context.Context, principal *Principal) error {
+func (s *Server) ServeStdio(ctx context.Context, principal *config.Principal) error {
 	dec := json.NewDecoder(os.Stdin)
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetEscapeHTML(false)
@@ -151,7 +153,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // principalFromRequest authenticates the caller via a bearer token.
-func (s *Server) principalFromRequest(r *http.Request) (*Principal, bool) {
+func (s *Server) principalFromRequest(r *http.Request) (*config.Principal, bool) {
 	auth := r.Header.Get("Authorization")
 	token := ""
 	if len(auth) > 7 && strings.EqualFold(auth[:7], "bearer ") {

@@ -9,15 +9,16 @@ One time, about 5 minutes. The bot only needs read access – it never writes to
 3. On the left, **Bot** → **Add Bot** → **Yes, do it**
 4. Under **Token**, click **Reset Token** → copy the token and store it safely (it is shown in plain text only once)
 
-Create a token file (preferred by the tool, safer than an environment variable on shared systems):
+Put the token into the configuration file (the one place the tool reads it from):
 
 ```bash
-echo -n "YOUR_TOKEN" > ~/.discord-backup-token
-chmod 600 ~/.discord-backup-token
+cp config.example.json config.json    # then set "guild_id", "archive_dir", "token"
+chmod 600 config.json
 ```
 
-> The tool refuses token files that are readable by group/others. The token is never accepted as a
-> command-line argument (visible to everyone via `ps`) and never logged.
+> The tool refuses a config that holds tokens but is readable by group/others. The
+> token is never accepted as a command-line argument (visible to everyone via `ps`)
+> and never logged.
 
 ## 2. Enable intents
 
@@ -45,13 +46,16 @@ Then right-click the server name → **Copy Server ID**.
 ## 5. Verify access
 
 ```bash
-discord-backup --guild YOUR_SERVER_ID --token-file ~/.discord-backup-token --list-channels
+cp config.example.json config.json     # guild_id + token
+chmod 600 config.json
+discord-backup --config config.json --list-channels
 ```
 
-This prints a table of all archivable channels. Then a test run with a single channel:
+This prints a table of all archivable channels. Then a test run limited to a
+single channel (`"channels": ["general"]` under `backup`):
 
 ```bash
-discord-backup --guild YOUR_SERVER_ID --channel general --token-file ~/.discord-backup-token
+discord-backup --config config.json
 ```
 
 If the run ends with `status=ok`, everything is set. On `forbidden`/`no_access`, see [troubleshooting.md](troubleshooting.md).

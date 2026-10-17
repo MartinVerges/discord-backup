@@ -1,0 +1,47 @@
+{
+  "guild_id": "123456789012345678",
+  "archive_dir": "/var/lib/discord-backup",
+  "token": "REPLACE_ME_BOT_TOKEN",
+
+  "backup": {
+    "download_attachments": true,
+    "backfill_attachments": false,
+    "include_bots": false,
+    "skip_empty": true,
+    "edit_window": "48h",
+    "attach_max_mb": 50,
+    "attach_workers": 4,
+    "every": "",
+    "limit": 0,
+    "since": "",
+    "channels": []
+  },
+
+  "mcp": {
+    "http_addr": "127.0.0.1:8765",
+    "default_principal": "",
+    "deleted": "hide",
+    "refresh_ttl": "60s",
+    "channel_ttl": "5m",
+    "member_ttl": "60s",
+    "retry_ttl": "5m",
+    "timeout": "5s",
+    "check_private_threads": false,
+    "audit_log": "",
+    "principals": [
+      {
+        "name": "martin",
+        "discord_id": "111111111111111111",
+        "email": "martin@example.com",
+        "aliases": ["martinverges"],
+        "token": "REPLACE_ME_openssl_rand_hex_32"
+      },
+      {
+        "name": "hildrun",
+        "discord_id": "222222222222222222",
+        "aliases": [],
+        "token": ""
+      }
+    ]
+  }
+}

@@ -64,62 +64,67 @@ principal could read the whole archive.
 
 ## Requirements
 
-- An existing archive (`server_<id>/`) produced by `discord-backup`.
-- For **live** permission checks: the **same bot token** as the backup,
-  either inline in the config (`token`) or in a `0600` file (`token_file`).
-  The bot must be able to read the guild's channels, roles and members.
+- An existing archive (`server_<id>`) produced by `discord-backup`.
+- The **same configuration file** the backup uses (see
+  [usage.md](usage.md)); the MCP settings are its `mcp` section.
+- For **live** permission checks: the bot token in that file (`token`). The bot
+  must be able to read the guild's channels, roles and members.
 - Without a token the server runs **snapshot-only**: roles and member roles
   come from the last backup run.
 
 ## Configuration
 
-Everything lives in one file. A config that contains any token (the bot token
-or a principal's HTTP token) **must be mode `0600`**, and the server refuses to
-start otherwise – so an inline token is no looser than a separate token file.
+There is no separate MCP config: `discord-backup mcp` reads the *same* file as
+the backup and uses its `mcp` section. Because the file holds tokens (the bot
+token and the principals' bearer tokens) it **must be mode `0600`**; the server
+refuses to start otherwise.
 
 ```json
 {
-  "archive_dir": "/var/lib/discord-backup",
   "guild_id": "123456789012345678",
+  "archive_dir": "/var/lib/discord-backup",
   "token": "BOT_TOKEN_SAME_AS_THE_BACKUP",
-  "deleted": "hide",
-  "refresh_ttl": "60s",
-  "channel_ttl": "5m",
-  "member_ttl": "60s",
-  "retry_ttl": "5m",
-  "timeout": "5s",
-  "check_private_threads": false,
-  "audit_log": "/var/log/discord-backup/mcp-audit.jsonl",
-  "default_principal": "martin",
-  "http_addr": "127.0.0.1:8765",
-  "principals": [
-    {
-      "name": "martin",
-      "discord_id": "826733236931526666",
-      "email": "martin@example.com",
-      "aliases": ["martinverges"],
-      "token": "a-long-random-string-for-the-http-transport"
-    },
-    {
-      "name": "hildrun",
-      "discord_id": "1055033396855840849",
-      "aliases": ["hildrunverges"]
-    }
-  ]
+
+  "backup": { "download_attachments": true },
+
+  "mcp": {
+    "http_addr": "127.0.0.1:8765",
+    "default_principal": "martin",
+    "deleted": "hide",
+    "refresh_ttl": "60s",
+    "channel_ttl": "5m",
+    "member_ttl": "60s",
+    "retry_ttl": "5m",
+    "timeout": "5s",
+    "check_private_threads": false,
+    "audit_log": "/var/log/discord-backup/mcp-audit.jsonl",
+    "principals": [
+      {
+        "name": "martin",
+        "discord_id": "111111111111111111",
+        "email": "martin@example.com",
+        "aliases": ["martinverges"],
+        "token": "a-long-random-string-for-the-http-transport"
+      },
+      {
+        "name": "hildrun",
+        "discord_id": "222222222222222222",
+        "aliases": ["hildrunverges"]
+      }
+    ]
+  }
 }
 ```
 
 ```bash
-chmod 600 mcp.json        # required: the file holds tokens
+chmod 600 config.json        # required: the file holds tokens
 # generate each principal token with: openssl rand -hex 32
 ```
 
-| Field | Default | Meaning |
+| Key under `mcp` | Default | Meaning |
 |---|---|---|
-| `archive_dir` | – | Backup `--out` directory (containing `server_<id>`), **required** |
-| `guild_id` | – | Selects one archive when `archive_dir` holds several |
-| `token` | – | Bot token for live permission refresh, inline in this file |
-| `token_file` | – | Alternative: read the bot token (mode `0600`) from a separate file, e.g. an injected secret |
+| `http_addr` | `127.0.0.1:8765` | Listen address for `--http` |
+| `default_principal` | – | Principal used by stdio when `--principal` is omitted |
 | `deleted` | `hide` | `hide` deleted messages, or `show` them (marked `deleted`) |
 | `refresh_ttl` | `60s` | How often the archive is rescanned for new data |
 | `channel_ttl` | `5m` | Cache lifetime for channel overwrites + roles |
@@ -128,9 +133,10 @@ chmod 600 mcp.json        # required: the file holds tokens
 | `timeout` | `5s` | Bound per live lookup, so an outage degrades quickly |
 | `check_private_threads` | `false` | Verify private-thread membership live (extra API calls) |
 | `audit_log` | – | Optional JSONL file, one line per tool call |
-| `default_principal` | – | Principal used by stdio when `--principal` is omitted |
-| `http_addr` | `127.0.0.1:8765` | Default listen address for `--http` |
 | `principals` | – | At least one; see below |
+
+The keys outside `mcp` (`guild_id`, `archive_dir`, `token`) are shared with the
+backup – `archive_dir` is where `server_<id>` lives.
 
 ### Principals
 
@@ -147,7 +153,7 @@ Tokens must be unique; if `http_addr` is set, at least one principal needs one
 ### stdio (Claude Desktop, Claude Code, …)
 
 ```bash
-discord-backup mcp --config mcp.json --principal martin
+discord-backup mcp --config config.json --principal martin
 ```
 
 The JSON-RPC protocol runs on stdin/stdout; all logs go to stderr.
@@ -155,7 +161,7 @@ The JSON-RPC protocol runs on stdin/stdout; all logs go to stderr.
 ### HTTP
 
 ```bash
-discord-backup mcp --config mcp.json --http --addr 127.0.0.1:8765
+discord-backup mcp --config config.json --http
 ```
 
 - `POST /mcp` – JSON-RPC 2.0, answered as `application/json`, or as
@@ -165,7 +171,8 @@ discord-backup mcp --config mcp.json --http --addr 127.0.0.1:8765
 - Auth: `Authorization: Bearer <principal token>` (or `X-MCP-Token`). Requests
   without a valid token get `401`.
 
-Bind to `127.0.0.1` unless you put a TLS reverse proxy in front.
+The listen address is `mcp.http_addr` (default `127.0.0.1:8765`). Bind to
+`127.0.0.1` unless you put a TLS reverse proxy in front.
 
 #### Healthcheck
 
@@ -177,10 +184,9 @@ exactly when `/healthz` answers `200`. Use it where there is no shell or `curl`
 
 | Flag | Meaning |
 |---|---|
-| `--config PATH` | Config file (or `DISCORD_MCP_CONFIG`), required |
+| `--config PATH` | Configuration file, the same one the backup reads (default `config.json`) |
 | `--principal NAME` | Principal for stdio (`name`, `email`, `discord_id` or alias) |
 | `--http` | Serve HTTP instead of stdio |
-| `--addr ADDR` | HTTP listen address (overrides `http_addr`) |
 | `--quiet` | Only warnings and errors |
 | `--version` | Print version and exit |
 
@@ -191,7 +197,7 @@ exactly when `/healthz` answers `200`. Use it where there is no shell or `curl`
   "mcpServers": {
     "discord-archive": {
       "command": "/usr/local/bin/discord-backup",
-      "args": ["mcp", "--config", "/etc/discord-backup/mcp.json", "--principal", "martin"]
+      "args": ["mcp", "--config", "/etc/discord-backup.json", "--principal", "martin"]
     }
   }
 }
@@ -263,11 +269,10 @@ later call is sub-second.
 
 - Read-only: no tool writes to the archive; the server downloads nothing.
 - Every token – the bot token and each principal's bearer token – lives in the
-  `0600` config file, or in a `0600` file the config points to via `token_file`;
-  the server refuses a config that holds tokens but is group/world-readable.
-  Tokens are never logged and never accepted as CLI arguments. (The backup CLI
-  additionally accepts `DISCORD_TOKEN`/`DISCORD_TOKEN_FILE`; the MCP server does
-  not, so secrets have exactly one home.)
+  one configuration file, which must be mode `0600`; the server refuses a config
+  that holds tokens but is group/world-readable. There is no token file and no
+  environment variable, and tokens are never logged or accepted as CLI
+  arguments.
 - HTTP requires a per-principal bearer token (constant-time comparison).
 - Content outside the caller's permissions is filtered before it leaves the
   process — including search hits, message lookups, context and channel lists.

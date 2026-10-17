@@ -1,71 +1,141 @@
 # Usage
 
 ```
-discord-backup --guild GUILD_ID [options]
-discord-backup mcp --config mcp.json [--principal NAME | --http]
+discord-backup [--config config.json] [--list-channels]
+discord-backup mcp --config config.json [--principal NAME | --http]
 ```
 
 `discord-backup mcp` serves the archive read-only over MCP, limited to each
 caller's Discord permissions – see [mcp.md](mcp.md).
 
-## Token (pick one)
+## One configuration file
 
-| Source | Example |
+**Everything is configured in one file** – the bot token, the guild, the
+archive directory, the backup schedule and the MCP settings. The backup and the
+MCP server read the *same* file, so there is no token file, no separate MCP
+config and no environment variable. `--config` defaults to `config.json`.
+
+```json
+{
+  "guild_id": "123456789012345678",
+  "archive_dir": "/var/lib/discord-backup",
+  "token": "your_bot_token",
+
+  "backup": {
+    "download_attachments": true,
+    "skip_empty": true,
+    "edit_window": "48h",
+    "every": "15m"
+  },
+
+  "mcp": {
+    "http_addr": "127.0.0.1:8765",
+    "principals": [
+      { "name": "martin", "discord_id": "111111111111111111", "token": "random-http-token" }
+    ]
+  }
+}
+```
+
+Start from [`config.example.json`](../config.example.json) and then:
+
+```bash
+cp config.example.json config.json
+chmod 600 config.json       # required: the file holds the token
+discord-backup              # one backup pass, ./config.json
+```
+
+A config that contains a token (the bot token or any principal token) **must be
+mode `0600`**; the tool refuses to start otherwise. Unknown keys are rejected,
+so a typo is an error instead of a silently ignored setting.
+
+### Top level
+
+| Key | Meaning |
 |---|---|
-| File (recommended) | `--token-file ~/.discord-backup-token` or `DISCORD_TOKEN_FILE=...` |
-| Environment variable | `DISCORD_TOKEN=...` |
+| `guild_id` | Discord server ID, **required** |
+| `archive_dir` | Archive root, **required** |
+| `token` | Bot token. Required for the backup; without it the MCP runs snapshot-only |
 
-The file must have mode `0600` (`chmod 600`), otherwise the tool refuses to start.
+### `backup`
 
-## Options
-
-| Option | Default | Meaning |
+| Key | Default | Meaning |
 |---|---|---|
-| `--guild ID` | `DISCORD_GUILD_ID` | Server ID (required) |
-| `--out DIR` | `ARCHIVE_PATH` / `./discord_archive` | Destination directory |
-| `--channel NAME/ID` | – | Only archive these channel(s) (repeatable) |
-| `--download-attachments` | off | Store attachments locally |
-| `--backfill-attachments` | off | Download attachments missing on disk for already archived messages (implies download; message data untouched) |
-| `--include-bots` | off | Also archive bot and webhook messages |
-| `--limit N` | `0` (= unlimited) | Limit the initial backfill to the newest N messages per channel/thread (first run only; existing archives are never truncated) |
-| `--since DATE` | – | Only archive messages newer than this date (`YYYY-MM-DD` or RFC3339), first run only; mutually exclusive with `--limit` |
-| `--edit-window DURATION` | `48h` | Time window for edit/delete detection (`0` = new messages only) |
-| `--attach-max-mb N` | `50` | Max attachment size in MB |
-| `--attach-workers N` | `4` | Parallel attachment downloads |
-| `--skip-empty` | on | Skip channels with no access or zero messages |
-| `--every DURATION` | `0` (once) | Run as a service: wait this long **after** each pass, then back up again |
-| `--list-channels` | off | Show channels as a table and exit |
-| `--version` | off | Print version and exit |
-| `--quiet` | off | Only log warnings and errors |
+| `download_attachments` | `false` | Store attachments locally |
+| `backfill_attachments` | `false` | Download attachments missing on disk for already archived messages (message data untouched) |
+| `include_bots` | `false` | Also archive bot and webhook messages |
+| `skip_empty` | `true` | Skip channels with no access or zero messages |
+| `edit_window` | `"48h"` | Window for edit/delete detection (`"0"` = new messages only) |
+| `attach_max_mb` | `50` | Max attachment size in MB |
+| `attach_workers` | `4` | Parallel attachment downloads |
+| `every` | `""` (once) | Service mode: wait this long **after** each pass, then back up again |
+| `limit` | `0` (= unlimited) | Initial backfill cap per channel/thread, newest N (first run only); mutually exclusive with `since` |
+| `since` | `""` | Only archive messages newer than this date (`YYYY-MM-DD` or RFC3339), first run only |
+| `channels` | `[]` | Restrict the archive to these channels/threads (name or ID) |
 
-Durations like `48h`, `24h`, `30m`, `0` are accepted.
+### `mcp`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `http_addr` | `127.0.0.1:8765` | Listen address for `mcp --http` |
+| `default_principal` | – | Identity for stdio when `--principal` is omitted |
+| `deleted` | `"hide"` | `hide` deleted messages, or `show` them (marked `deleted`) |
+| `refresh_ttl` | `"60s"` | How often the archive is rescanned for new data |
+| `channel_ttl` | `"5m"` | Cache lifetime for channel overwrites + roles |
+| `member_ttl` | `"60s"` | Cache lifetime for one member's roles |
+| `retry_ttl` | `"5m"` | Pause live lookups this long after a failure, then retry |
+| `timeout` | `"5s"` | Bound per live lookup, so an outage degrades quickly |
+| `check_private_threads` | `false` | Verify private-thread membership live (extra API calls) |
+| `audit_log` | – | Optional JSONL file, one line per tool call |
+| `principals` | – | Identity mapping; see [mcp.md](mcp.md#principals) |
+
+Durations like `"48h"`, `"24h"`, `"30m"`, `"0"` are accepted.
+
+## Command-line options
+
+Since every setting lives in the config, the CLI is small:
+
+| Option | Meaning |
+|---|---|
+| `--config PATH` | Configuration file (default `config.json`) |
+| `--list-channels` | Show channels as a table and exit (backup) |
+| `--principal NAME` | Identity for the stdio transport (mcp) |
+| `--http` | Serve HTTP instead of stdio (mcp) |
+| `--quiet` | Only log warnings and errors |
+| `--version` | Print version and exit |
 
 ## Examples
 
 ```bash
-# Archive everything, with attachments
-discord-backup --guild 123 --out /var/lib/discord-backup --download-attachments
+# One pass, using ./config.json
+discord-backup
 
-# Only two channels
-discord-backup --guild 123 --channel general --channel 987654321
-
-# Trial run: 100 newest messages from one channel, no edit reconciliation
-discord-backup --guild 123 --channel general --limit 100 --edit-window 0
-
-# Only archive messages from 2026 on (first run scans forward from that date)
-discord-backup --guild 123 --since 2026-01-01
-
-# Fetch attachments missed earlier (e.g. old size cap, or archived before --download-attachments)
-discord-backup --guild 123 --backfill-attachments
-
-# Include bots (backfilled retroactively, without duplicates)
-discord-backup --guild 123 --include-bots
+# Somewhere else, with --list-channels
+discord-backup --config /etc/discord-backup.json --list-channels
 
 # Quiet in cron (only check the log on problems)
-discord-backup --guild 123 --quiet
+discord-backup --config /etc/discord-backup.json --quiet
 
-# Self-scheduling service: no cron needed (handy in Docker)
-discord-backup --guild 123 --out /var/lib/discord-backup --every 15m
+# Read-only MCP server
+discord-backup mcp --config config.json --principal martin
+```
+
+Trial runs and one-offs are config edits, not flags – e.g.
+
+```json
+{ "backup": { "channels": ["general"], "limit": 100, "edit_window": "0" } }
+```
+
+```json
+{ "backup": { "since": "2026-01-01" } }
+```
+
+```json
+{ "backup": { "backfill_attachments": true } }
+```
+
+```json
+{ "backup": { "include_bots": true } }
 ```
 
 ## Scheduling
@@ -73,21 +143,21 @@ discord-backup --guild 123 --out /var/lib/discord-backup --every 15m
 Two equivalent ways to keep an archive fresh:
 
 - **Cron / systemd timer** on the host: one process per tick, exit when done.
-- **`--every` service mode**: one long-running process that backs up, waits
-  `--every` after each pass, then runs again. Passes never overlap, a failing
-  pass is retried on the next tick instead of stopping the loop, and `SIGINT`/
-  `SIGTERM` shuts down cleanly (exit `0`). This is what the Docker Compose
-  template uses, since Compose has no scheduler of its own.
+- **Service mode** (`backup.every`): one long-running process that backs up,
+  waits `every` after each pass, then runs again. Passes never overlap, a
+  failing pass is retried on the next tick instead of stopping the loop, and
+  `SIGINT`/`SIGTERM` shuts down cleanly (exit `0`). This is what the Docker
+  Compose template uses, since Compose has no scheduler of its own.
 
-Either way, runs that do overlap are safe: the lock in `<out>/.lock` makes a
-second run exit `0` with `another backup run is active, exiting`.
+Either way, runs that do overlap are safe: the lock in `<archive_dir>/.lock`
+makes a second run exit `0` with `another backup run is active, exiting`.
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | OK – including when another run is currently active (lock, not an error) |
-| `1` | Error (token, network, guild-level permissions, …) |
+| `1` | Error (config, token, network, guild-level permissions, …) |
 | `130` | Interrupted via Ctrl-C/signal |
 
 Individual problem channels (no access, deleted) never abort the run – they are logged, skipped, and marked `no_access` in the index.

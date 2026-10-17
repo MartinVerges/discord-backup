@@ -1,17 +1,25 @@
 # Automation
 
 One run syncs everything since the last one. Just invoke it repeatedly – a lock file
-(`$OUT/.lock`) keeps two runs from overlapping; a skipped or interrupted run is picked up
-by the next one.
+(`<archive_dir>/.lock`) keeps two runs from overlapping; a skipped or interrupted
+run is picked up by the next one.
 
-## No scheduler at all: `--every`
+All runs read the same configuration file, e.g. `/etc/discord-backup.json`
+(see [usage.md](usage.md)); a plain `discord-backup --config /etc/discord-backup.json`
+is then the whole command.
 
-If you would rather not configure cron/timers, the tool can schedule itself: `--every`
-runs a pass, waits that long **after** the pass finished, and runs again until stopped.
+## No scheduler at all: `backup.every`
+
+If you would rather not configure cron/timers, the tool can schedule itself: set
+`"every": "15m"` under `backup` and it runs a pass, waits that long **after** the
+pass finished, and runs again until stopped.
+
+```json
+{ "backup": { "every": "15m", "download_attachments": true } }
+```
 
 ```bash
-discord-backup --guild YOUR_SERVER_ID --out /var/lib/discord-backup \
-  --download-attachments --token-file /etc/discord-backup/token --every 15m
+discord-backup --config /etc/discord-backup.json
 ```
 
 - Passes never overlap: the wait starts when the pass ends.
@@ -20,20 +28,15 @@ discord-backup --guild YOUR_SERVER_ID --out /var/lib/discord-backup \
   `systemd` `Type=simple`, or a plain foreground run.
 - Not combinable with `--list-channels` (that always exits).
 
-Everything below is equivalent – pick whichever fits your host.
+Everything below is equivalent – pick whichever fits your host. Leave
+`backup.every` empty for these.
 
 ## cron (Linux/macOS)
 
 `crontab -e`, every 15 minutes:
 
 ```
-*/15 * * * * /usr/local/bin/discord-backup --guild YOUR_SERVER_ID --out /var/lib/discord-backup --download-attachments >>/var/log/discord-backup.log 2>&1
-```
-
-With a token file instead of env (recommended if multiple users share the system):
-
-```
-*/15 * * * * /usr/local/bin/discord-backup --guild YOUR_SERVER_ID --out /var/lib/discord-backup --download-attachments --token-file /etc/discord-backup/token >>/var/log/discord-backup.log 2>&1
+*/15 * * * * /usr/local/bin/discord-backup --config /etc/discord-backup.json >>/var/log/discord-backup.log 2>&1
 ```
 
 ## systemd timer (Linux)
@@ -48,7 +51,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/discord-backup --guild YOUR_SERVER_ID --out /var/lib/discord-backup --download-attachments --token-file /etc/discord-backup/token
+ExecStart=/usr/local/bin/discord-backup --config /etc/discord-backup.json
 ```
 
 `/etc/systemd/system/discord-backup.timer`:
@@ -70,13 +73,14 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now discord-backup.timer
 ```
 
-Alternatively a single long-running unit – no timer needed:
+Alternatively a single long-running unit – no timer needed (config sets
+`"every": "15m"`):
 
 ```ini
 [Service]
 Type=simple
 Restart=always
-ExecStart=/usr/local/bin/discord-backup --guild YOUR_SERVER_ID --out /var/lib/discord-backup --download-attachments --token-file /etc/discord-backup/token --every 15m
+ExecStart=/usr/local/bin/discord-backup --config /etc/discord-backup.json
 ```
 
 ## launchd (macOS)
@@ -92,10 +96,7 @@ ExecStart=/usr/local/bin/discord-backup --guild YOUR_SERVER_ID --out /var/lib/di
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/discord-backup</string>
-    <string>--guild</string><string>YOUR_SERVER_ID</string>
-    <string>--out</string><string>/Users/YOU/discord-backup</string>
-    <string>--download-attachments</string>
-    <string>--token-file</string><string>/Users/YOU/.discord-backup-token</string>
+    <string>--config</string><string>/Users/YOU/.discord-backup.json</string>
   </array>
   <key>StartInterval</key><integer>900</integer>
   <key>StandardOutPath</key><string>/tmp/discord-backup.log</string>

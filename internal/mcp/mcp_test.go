@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"discord-backup/internal/config"
 	"discord-backup/internal/discord"
 	"discord-backup/internal/perms"
 )
@@ -103,7 +104,7 @@ func writeJSONTo(t *testing.T, path string, obj any) {
 func testSettings(root string) Settings {
 	return Settings{
 		ArchiveDir: root,
-		Principals: []Principal{
+		Principals: []config.Principal{
 			{Name: "alice", DiscordID: "U1", Email: "alice@example.com", Aliases: []string{"ali"}, Token: "tok-alice"},
 			{Name: "bob", DiscordID: "U2", Token: "tok-bob"},
 			{Name: "carol", DiscordID: "U3", Token: "tok-carol"},
@@ -122,7 +123,7 @@ func newTestServer(t *testing.T, root string) *Server {
 
 // toolCall runs a tool and returns its structuredContent, JSON round-tripped
 // so nested values are plain maps/slices (like a real MCP client sees).
-func toolCall(t *testing.T, s *Server, pr *Principal, tool string, args any) map[string]any {
+func toolCall(t *testing.T, s *Server, pr *config.Principal, tool string, args any) map[string]any {
 	t.Helper()
 	raw, _ := json.Marshal(args)
 	params, _ := json.Marshal(map[string]any{"name": tool, "arguments": json.RawMessage(raw)})
@@ -146,7 +147,7 @@ func toolCall(t *testing.T, s *Server, pr *Principal, tool string, args any) map
 }
 
 // toolCallErr expects a tool-execution failure.
-func toolCallErr(t *testing.T, s *Server, pr *Principal, tool string, args any) bool {
+func toolCallErr(t *testing.T, s *Server, pr *config.Principal, tool string, args any) bool {
 	t.Helper()
 	raw, _ := json.Marshal(args)
 	params, _ := json.Marshal(map[string]any{"name": tool, "arguments": json.RawMessage(raw)})
@@ -332,58 +333,6 @@ func TestResolvePrincipals(t *testing.T) {
 	}
 	if _, ok := st.ByToken("wrong"); ok {
 		t.Fatal("wrong token must not resolve")
-	}
-}
-
-// --- config ----------------------------------------------------------------
-
-func TestLoadConfigSecretPermissions(t *testing.T) {
-	dir := t.TempDir()
-	write := func(name, body string, mode os.FileMode) string {
-		t.Helper()
-		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, []byte(body), mode); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(p, mode); err != nil { // defeat umask
-			t.Fatal(err)
-		}
-		return p
-	}
-
-	const withBotToken = `{"archive_dir":"/data","token":"bot-secret",
-		"principals":[{"name":"alice","discord_id":"U1"}]}`
-	const withPrincipalToken = `{"archive_dir":"/data",
-		"principals":[{"name":"alice","discord_id":"U1","token":"bearer"}]}`
-	const noSecrets = `{"archive_dir":"/data","token_file":"/token",
-		"principals":[{"name":"alice","discord_id":"U1"}]}`
-
-	// A 0600 config with an inline token loads, and the token is resolved.
-	p := write("secure.json", withBotToken, 0o600)
-	cfg, err := LoadConfig(p)
-	if err != nil {
-		t.Fatalf("0600 config with inline token: %v", err)
-	}
-	st, err := cfg.Settings()
-	if err != nil || st.Token != "bot-secret" {
-		t.Fatalf("inline token not resolved: %q %v", st.Token, err)
-	}
-
-	// Secrets in a group/world-readable config are refused...
-	for name, body := range map[string]string{
-		"inline.json":    withBotToken,
-		"principal.json": withPrincipalToken,
-	} {
-		if _, err := LoadConfig(write(name, body, 0o644)); err == nil {
-			t.Fatalf("%s: a config holding tokens must be rejected at 0644", name)
-		} else if !strings.Contains(err.Error(), "chmod 600") {
-			t.Fatalf("%s: error should point at the fix, got %v", name, err)
-		}
-	}
-
-	// ...but a config that carries no token may be readable.
-	if _, err := LoadConfig(write("plain.json", noSecrets, 0o644)); err != nil {
-		t.Fatalf("secret-free config at 0644: %v", err)
 	}
 }
 

@@ -157,10 +157,10 @@ func (c Config) logger() *slog.Logger {
 func Run(ctx context.Context, cfg Config) error {
 	log := cfg.logger()
 	if cfg.Token == "" {
-		return errors.New("no token (set DISCORD_TOKEN or --token-file)")
+		return errors.New(`no token (set "token" in the configuration file)`)
 	}
 	if cfg.GuildID == "" {
-		return errors.New("no guild (set --guild or DISCORD_GUILD_ID)")
+		return errors.New(`no guild (set "guild_id" in the configuration file)`)
 	}
 	if cfg.Limit > 0 && !cfg.Since.IsZero() {
 		return errors.New("--limit and --since are mutually exclusive")

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"discord-backup/internal/archive"
+	"discord-backup/internal/config"
 )
 
 // toolDefs returns the MCP tool catalogue.
@@ -100,7 +101,7 @@ func enumProp(desc string, vals ...string) map[string]any {
 }
 
 // runTool executes a tool for a principal and returns (result, resultCount, error).
-func (s *Server) runTool(ctx context.Context, principal *Principal, name string, args json.RawMessage) (any, int, error) {
+func (s *Server) runTool(ctx context.Context, principal *config.Principal, name string, args json.RawMessage) (any, int, error) {
 	allowed, access, err := s.accessFor(ctx, principal)
 	if err != nil {
 		return nil, 0, err
@@ -127,7 +128,7 @@ func (s *Server) runTool(ctx context.Context, principal *Principal, name string,
 
 // accessFor computes the caller's readable channel set and the matching
 // archive access predicate.
-func (s *Server) accessFor(ctx context.Context, principal *Principal) (map[string]bool, archive.Access, error) {
+func (s *Server) accessFor(ctx context.Context, principal *config.Principal) (map[string]bool, archive.Access, error) {
 	allowed, err := s.res.AllowedChannels(ctx, principal.DiscordID)
 	if err != nil {
 		return nil, nil, err
@@ -170,7 +171,7 @@ func (s *Server) threadMembership(ctx context.Context, userID string, allowed ma
 
 // --- individual tools ------------------------------------------------------
 
-func (s *Server) toolWhoami(principal *Principal, allowed map[string]bool, access archive.Access) map[string]any {
+func (s *Server) toolWhoami(principal *config.Principal, allowed map[string]bool, access archive.Access) map[string]any {
 	logs, messages := s.arch.Count(access)
 	channels, threads, untyped := 0, 0, 0
 	for _, l := range s.arch.LogsInfo(access) {

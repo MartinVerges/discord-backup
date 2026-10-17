@@ -12,6 +12,7 @@ import (
 
 	"discord-backup/internal/archive"
 	"discord-backup/internal/authz"
+	"discord-backup/internal/config"
 	"discord-backup/internal/discord"
 	"discord-backup/internal/store"
 )
@@ -132,7 +133,7 @@ func New(ctx context.Context, settings Settings, log *slog.Logger) (*Server, err
 }
 
 // Handle dispatches one JSON-RPC message. It returns nil for notifications.
-func (s *Server) Handle(ctx context.Context, principal *Principal, req *Request) *Response {
+func (s *Server) Handle(ctx context.Context, principal *config.Principal, req *Request) *Response {
 	if req == nil {
 		return rpcErrReply(nil, -32600, "empty request")
 	}
@@ -189,7 +190,7 @@ func (s *Server) initialize(params json.RawMessage) map[string]any {
 	}
 }
 
-func (s *Server) callTool(ctx context.Context, principal *Principal, req *Request) *Response {
+func (s *Server) callTool(ctx context.Context, principal *config.Principal, req *Request) *Response {
 	var p struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`

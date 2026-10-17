@@ -7,7 +7,9 @@
 /archive/
 *.log
 
-# Secrets (never commit)
+# Secrets (never commit): the one config file holds the bot token
+config.json
+*.secret.json
 .token
 *.token
 DISCORD_TOKEN*

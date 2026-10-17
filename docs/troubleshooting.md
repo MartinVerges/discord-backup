@@ -9,8 +9,8 @@ for `fetching messages … phase=backfill` heartbeats (every 15 s) and
 `fetch complete` with page/message counts. Chunks are written to disk as they
 arrive, so Ctrl-C is safe: the next run resumes (newer messages via catch-up,
 older ones via heal) instead of starting over. To skip old history entirely,
-use `--since YYYY-MM-DD` (scans forward from that date, no paging through
-older history).
+set `"since"` under `backup` (scans forward from that date, no paging
+through older history).
 
 ## `forbidden … Missing Access (code 50001)`
 
@@ -34,17 +34,17 @@ catches up. If the message persists, a process is stuck (`ps aux | grep discord-
 
 ## Token errors
 
-- `no token`: `DISCORD_TOKEN` or `--token-file` is missing.
-- `token file … must not be group/world accessible`: `chmod 600 <file>`.
+- `no bot token: set "token" in config.json`: add the token to the config.
+- `config … holds tokens and must not be group/world accessible`: `chmod 600 config.json`.
 - `401 Unauthorized`: token wrong/expired → regenerate via **Reset Token** in the portal.
 
 ## Rate limits / slow first run
 
 Normal: Discord throttles requests, the tool complies and patiently backfills history.
-Interrupting is safe – the next run continues. For very active servers, skip
-`--download-attachments` on the first run and catch up later.
+Interrupting is safe – the next run continues. For very active servers, leave
+`download_attachments` off on the first run and catch up later.
 
 ## `attachments_failed > 0`
 
-Individual downloads (expired CDN links, files over `--attach-max-mb`) may fail while the run
+Individual downloads (expired CDN links, files over `attach_max_mb`) may fail while the run
 continues. Missing files are retried on the next run as long as the URL is still valid.

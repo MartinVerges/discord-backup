@@ -1,0 +1,182 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// writeConfig writes a config with an explicit mode (defeating umask).
+func writeConfig(t *testing.T, name, body string, mode os.FileMode) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(p, []byte(body), mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, mode); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestExampleConfigParses keeps the shipped config.example.json valid: every
+// key it uses must exist, and its values must pass validation.
+func TestExampleConfigParses(t *testing.T) {
+	raw, err := os.ReadFile("../../config.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(raw); err != nil {
+		t.Fatalf("config.example.json does not parse: %v", err)
+	}
+}
+
+func TestLoadDefaults(t *testing.T) {
+	p := writeConfig(t, "config.json", `{
+		"guild_id": "G",
+		"archive_dir": "/data",
+		"token": "bot-secret",
+		"mcp": {"principals": [{"name": "alice", "discord_id": "U1"}]}
+	}`, 0o600)
+	o, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.GuildID != "G" || o.ArchiveDir != "/data" || o.Token != "bot-secret" {
+		t.Fatalf("top level not parsed: %+v", o)
+	}
+	// Backup defaults: skip_empty on, 48h edit window, no schedule, 50 MB / 4.
+	if !o.Backup.SkipEmpty || o.Backup.EditWindow != 48*time.Hour || o.Backup.Every != 0 {
+		t.Fatalf("backup defaults wrong: %+v", o.Backup)
+	}
+	if o.Backup.AttachMaxMB != 50 || o.Backup.AttachWorkers != 4 {
+		t.Fatalf("attachment defaults wrong: %+v", o.Backup)
+	}
+	// MCP defaults.
+	if o.MCP.ShowDeleted || o.MCP.RefreshTTL != time.Minute || o.MCP.ChannelTTL != 5*time.Minute {
+		t.Fatalf("mcp defaults wrong: %+v", o.MCP)
+	}
+	if o.MCP.RetryTTL != 5*time.Minute || o.MCP.Timeout != 5*time.Second {
+		t.Fatalf("mcp defaults wrong: %+v", o.MCP)
+	}
+}
+
+func TestLoadValues(t *testing.T) {
+	p := writeConfig(t, "config.json", `{
+		"guild_id": "G",
+		"archive_dir": "/data",
+		"token": "bot-secret",
+		"backup": {
+			"download_attachments": true,
+			"include_bots": true,
+			"skip_empty": false,
+			"edit_window": "0",
+			"attach_max_mb": 10,
+			"attach_workers": 2,
+			"every": "15m",
+			"channels": ["general", "123"]
+		},
+		"mcp": {
+			"deleted": "show",
+			"channel_ttl": "1m",
+			"check_private_threads": true,
+			"http_addr": "0.0.0.0:8765",
+			"principals": [{"name": "alice", "discord_id": "U1", "token": "t1"}]
+		}
+	}`, 0o600)
+	o, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.Backup.DownloadAttachments || !o.Backup.IncludeBots || o.Backup.SkipEmpty {
+		t.Fatalf("backup bools wrong: %+v", o.Backup)
+	}
+	if o.Backup.EditWindow != 0 || o.Backup.Every != 15*time.Minute {
+		t.Fatalf("backup durations wrong: %+v", o.Backup)
+	}
+	if len(o.Backup.Channels) != 2 || o.Backup.AttachMaxMB != 10 || o.Backup.AttachWorkers != 2 {
+		t.Fatalf("backup values wrong: %+v", o.Backup)
+	}
+	if !o.MCP.ShowDeleted || o.MCP.ChannelTTL != time.Minute || !o.MCP.CheckPrivateThreads {
+		t.Fatalf("mcp values wrong: %+v", o.MCP)
+	}
+	if o.MCP.HTTPAddr != "0.0.0.0:8765" {
+		t.Fatalf("http_addr not parsed: %+v", o.MCP)
+	}
+}
+
+func TestLoadSecretPermissions(t *testing.T) {
+	const withBotToken = `{"guild_id":"G","archive_dir":"/data","token":"bot-secret"}`
+	const withPrincipalToken = `{"guild_id":"G","archive_dir":"/data",
+		"mcp":{"principals":[{"name":"alice","discord_id":"U1","token":"bearer"}]}}`
+	// No bot token and token-less principals: nothing secret to protect.
+	const noSecrets = `{"guild_id":"G","archive_dir":"/data",
+		"mcp":{"principals":[{"name":"alice","discord_id":"U1"}]}}`
+
+	if _, err := Load(writeConfig(t, "ok.json", withBotToken, 0o600)); err != nil {
+		t.Fatalf("0600 config with token: %v", err)
+	}
+	for name, body := range map[string]string{
+		"bot.json":       withBotToken,
+		"principal.json": withPrincipalToken,
+	} {
+		_, err := Load(writeConfig(t, name, body, 0o644))
+		if err == nil {
+			t.Fatalf("%s: a config holding tokens must be rejected at 0644", name)
+		}
+		if !strings.Contains(err.Error(), "chmod 600") {
+			t.Fatalf("%s: error should point at the fix, got %v", name, err)
+		}
+	}
+	if _, err := Load(writeConfig(t, "plain.json", noSecrets, 0o644)); err != nil {
+		t.Fatalf("secret-free config at 0644: %v", err)
+	}
+}
+
+func TestLoadRejectsBadConfig(t *testing.T) {
+	valid := `"guild_id":"G","archive_dir":"/data","token":"t"`
+	for name, body := range map[string]string{
+		"unknown field":  `{` + valid + `,"nope":1}`,
+		"no guild":       `{"archive_dir":"/data","token":"t"}`,
+		"no archive":     `{"guild_id":"G","token":"t"}`,
+		"limit + since":  `{` + valid + `,"backup":{"limit":10,"since":"2026-01-01"}}`,
+		"bad since":      `{` + valid + `,"backup":{"since":"yesterday"}}`,
+		"bad duration":   `{` + valid + `,"backup":{"every":"soon"}}`,
+		"bad deleted":    `{` + valid + `,"mcp":{"deleted":"maybe"}}`,
+		"duplicate name": `{` + valid + `,"mcp":{"principals":[{"name":"a","discord_id":"1"},{"name":"A","discord_id":"2"}]}}`,
+		"shared token":   `{` + valid + `,"mcp":{"principals":[{"name":"a","discord_id":"1","token":"x"},{"name":"b","discord_id":"2","token":"x"}]}}`,
+		"http no token":  `{` + valid + `,"mcp":{"http_addr":"127.0.0.1:1","principals":[{"name":"a","discord_id":"1"}]}}`,
+		"no discord_id":  `{` + valid + `,"mcp":{"principals":[{"name":"a"}]}}`,
+	} {
+		if _, err := Load(writeConfig(t, "bad.json", "{"+body+"}", 0o600)); err == nil {
+			t.Fatalf("%s: expected an error", name)
+		}
+	}
+}
+
+func TestPrincipalLookup(t *testing.T) {
+	p := []Principal{
+		{Name: "alice", DiscordID: "U1", Email: "alice@example.com", Aliases: []string{"ali"}, Token: "tok-alice"},
+		{Name: "bob", DiscordID: "U2", Token: "tok-bob"},
+	}
+	for _, id := range []string{"alice", "ALICE", "alice@example.com", "ali", "U1"} {
+		got, err := ResolvePrincipal(p, id)
+		if err != nil || got.DiscordID != "U1" {
+			t.Fatalf("resolve %q: %+v %v", id, got, err)
+		}
+	}
+	if _, err := ResolvePrincipal(p, "nobody"); err == nil {
+		t.Fatal("unknown principal must fail")
+	}
+	if _, err := ResolvePrincipal(nil, "alice"); err == nil {
+		t.Fatal("no principals must fail")
+	}
+	if got, ok := PrincipalByToken(p, "tok-bob"); !ok || got.DiscordID != "U2" {
+		t.Fatalf("PrincipalByToken: %+v %v", got, ok)
+	}
+	if _, ok := PrincipalByToken(p, "wrong"); ok {
+		t.Fatal("wrong token must not resolve")
+	}
+}

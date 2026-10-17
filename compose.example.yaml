@@ -1,61 +1,44 @@
-# Example: keep an archive fresh and serve it read-only over MCP/HTTP, both
-# as compose services. Copy to compose.yaml and adjust:
+# Example: one configuration file drives everything. The backup service and the
+# MCP service read the same file; there is no token file and no .env.
 #
-#   cp compose.example.yaml compose.yaml
-#   cp mcp.example.json mcp.json          # set "archive_dir": "/data"
-#                                         # keep "token_file": "/token", or
-#                                         # inline the bot token as "token"
-#   chmod 600 mcp.json                    # it holds tokens
-#   printf '%s' "$BOT_TOKEN" > token && chmod 600 token
-#
-# The container runs as uid:gid 65532:65532, so the bind-mounted paths must be
-# readable/writable by that user:
-#
+#   cp config.example.json config.json
+#     #   "archive_dir": "/data"        (container path!)
+#     #   "token": "<bot token>"
+#     #   "backup": {"every": "15m"}    (self-scheduling, no cron needed)
+#     #   "mcp": {...}                  (principals + their bearer tokens)
+#   chmod 600 config.json               # it holds tokens
 #   mkdir -p archive
-#   sudo chown 65532:65532 archive mcp.json token
+#   sudo chown 65532:65532 archive config.json   # container runs as 65532:65532
+#   docker compose up -d
 #
-# The MCP reads no environment variables: the bot token comes from mcp.json
-# ("token") or from the file it points to ("token_file"). Only the backup takes
-# the token as a flag. See docs/docker.md and docs/mcp.md.
+# See docs/docker.md and docs/mcp.md.
 
 services:
-  # Self-scheduling backup: runs a pass, waits --every after it finished, then
-  # runs again. No cron and no host scheduler needed (compose has neither).
-  # Change "15m" to taste; a failing pass is retried on the next tick.
+  # Backup service: runs a pass, waits backup.every, runs again. Both the
+  # schedule ("every") and everything else come from config.json.
   backup:
     image: ghcr.io/martinverges/discord-backup:latest
     restart: unless-stopped
     volumes:
       - ./archive:/data
-      - ./token:/token:ro
+      - ./config.json:/etc/discord-backup.json:ro
     command:
-      - --guild
-      - YOUR_SERVER_ID
-      - --out
-      - /data
-      - --token-file
-      - /token
-      - --download-attachments
-      - --every
-      - 15m
+      - --config
+      - /etc/discord-backup.json
 
-  # Read-only MCP server over HTTP. Keeps running; the archive is mounted
-  # read-only because the MCP never writes to it.
+  # Read-only MCP server over HTTP. Mounts the same archive read-only, because
+  # the MCP never writes to it.
   mcp:
     image: ghcr.io/martinverges/discord-backup:latest
     restart: unless-stopped
     volumes:
       - ./archive:/data:ro
-      - ./mcp.json:/etc/mcp.json:ro
-      # Only needed when mcp.json uses "token_file" instead of "token".
-      - ./token:/token:ro
+      - ./config.json:/etc/discord-backup.json:ro
     command:
       - mcp
       - --config
-      - /etc/mcp.json
+      - /etc/discord-backup.json
       - --http
-      - --addr
-      - 0.0.0.0:8765
     ports:
       # Keep it on localhost; put a TLS reverse proxy in front to expose it.
       - "127.0.0.1:8765:8765"

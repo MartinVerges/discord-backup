@@ -5,4 +5,6 @@ discord-backup
 discord-backup-*
 .token
 *.token
+config.json
+*.secret.json
 *.log
