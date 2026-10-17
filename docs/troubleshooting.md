@@ -12,6 +12,35 @@ older ones via heal) instead of starting over. To skip old history entirely,
 set `"since"` under `backup` (scans forward from that date, no paging
 through older history).
 
+Forums are the long pole: every post is a thread with its own log, so a forum
+channel can take far longer than any text channel. The log says so -
+`archived threads scanned threads=… pages=…` before the posts,
+`thread backup progress done=… of=…` every 15 s while working through them,
+and the per-channel `threads=N` in `channel done`. If none of these lines
+appear for minutes, the job really is stuck rather than busy.
+
+Two loops used to be able to spin forever, producing exactly that silence -
+no output, no writes, only Discord requests:
+
+* An archived-thread page that Discord hands back again (an inclusive or
+  coarser `before`) was re-fetched unchanged. The cursor now steps one second
+  back once and then stops with
+  `archived threads: cursor stopped advancing, stopping`.
+* A page consisting only of filtered-out (bot) messages did not move the
+  message cursor. The cursor now follows the page, not the stored messages.
+
+Both loops are guarded now, so they stop with a warning instead of spinning.
+If the log still stops for minutes, the run is waiting on a request rather
+than busy: the last line names the channel, the container can be restarted
+safely (archives are append-only and resume), and the same channel is picked
+up again next run. To see whether a run is progressing right now, watch the
+archive on the host:
+
+```bash
+# files written in the last 3 minutes (busy) vs. nothing (stuck)
+find "./archive" -newermt '-3 minutes' | head
+```
+
 ## `forbidden … Missing Access (code 50001)`
 
 The bot may not read the channel. Server Settings → Roles → bot role: enable **View Channels**

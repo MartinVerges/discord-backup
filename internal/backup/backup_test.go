@@ -733,3 +733,214 @@ func TestSkipEmptyNoAccess(t *testing.T) {
 		t.Fatalf("index should be empty: %s", index)
 	}
 }
+
+// --- the two ways a run used to hang on a busy forum -----------------------
+
+// TestThreadCursor pins the cursor type per endpoint: public/private archived
+// threads page by archive timestamp, joined private threads page by thread id.
+// Sending the wrong one is what makes Discord hand back the same page.
+func TestThreadCursor(t *testing.T) {
+	page := []discord.Channel{{
+		ID:         "42",
+		ThreadMeta: &discord.ThreadMetadata{ArchiveTimestamp: "2024-01-15T12:33:44.123456+00:00"},
+	}}
+	got, ok := threadCursor("joined", page)
+	if !ok || got != "42" {
+		t.Fatalf("joined cursor = %q (%v), want the thread id", got, ok)
+	}
+	got, ok = threadCursor("public", page)
+	if !ok || got != "2024-01-15T12:33:44.123456Z" {
+		t.Fatalf("public cursor = %q (%v), want the archive timestamp", got, ok)
+	}
+	if _, ok := threadCursor("public", []discord.Channel{{ID: "1"}}); ok {
+		t.Fatal("a page without thread metadata must not produce a cursor")
+	}
+	back, ok := stepBack(got, "public")
+	if !ok || back != "2024-01-15T12:33:43.123456Z" {
+		t.Fatalf("stepBack = %q (%v)", back, ok)
+	}
+	if _, ok := stepBack("42", "joined"); ok {
+		t.Fatal("a thread id cursor cannot be stepped back")
+	}
+}
+
+// forumStub serves one forum channel with the given archived threads. The
+// public archived endpoint honours `before` the way the docs describe
+// (exclusive, by archive timestamp); replay=true makes it ignore the cursor
+// instead, which is the observed failure mode.
+func forumStub(t *testing.T, forum string, threads []map[string]any, replay bool) (*httptest.Server, *int) {
+	t.Helper()
+	parse := func(v string) time.Time {
+		ts, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			t.Fatalf("stub: bad timestamp %q: %v", v, err)
+		}
+		return ts
+	}
+	calls := new(int)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		write := func(v any) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(v)
+		}
+		p := r.URL.Path
+		switch {
+		case p == "/users/@me":
+			write(map[string]any{"id": "BOT", "username": "archiver", "bot": true})
+		case p == "/guilds/G":
+			write(map[string]any{"id": "G", "name": "Test", "approximate_member_count": 2})
+		case p == "/guilds/G/channels":
+			write([]any{map[string]any{"id": forum, "name": "support", "type": 15, "position": 0}})
+		case p == "/guilds/G/threads/active":
+			write(map[string]any{"threads": []any{}, "members": []any{}})
+		case p == "/channels/"+forum+"/threads/archived/public":
+			*calls++
+			if *calls > 12 {
+				// Regression guard: terminates a broken implementation so the
+				// assertion fails cleanly instead of hanging the test.
+				write(map[string]any{"threads": []any{}, "has_more": false})
+				return
+			}
+			before := r.URL.Query().Get("before")
+			var match []map[string]any
+			for _, th := range threads {
+				if before != "" && !replay {
+					ts := th["thread_metadata"].(map[string]any)["archive_timestamp"].(string)
+					if !parse(ts).Before(parse(before)) {
+						continue
+					}
+				}
+				match = append(match, th)
+			}
+			more := len(match) > 100
+			if more {
+				match = match[:100]
+			}
+			write(map[string]any{"threads": match, "has_more": more || replay})
+		case strings.HasSuffix(p, "/messages"):
+			id := strings.TrimSuffix(strings.TrimPrefix(p, "/channels/"), "/messages")
+			write([]any{map[string]any{
+				"id": "1", "channel_id": id, "content": "hi",
+				"timestamp":   "2024-01-15T12:00:00.000000+00:00",
+				"author":      map[string]any{"id": "U1", "username": "alice", "bot": false},
+				"attachments": []any{}, "embeds": []any{},
+			}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	return srv, calls
+}
+
+// TestArchivedThreadPagination walks more threads than fit in one page and
+// checks nothing is lost on the way.
+func TestArchivedThreadPagination(t *testing.T) {
+	const forum = "F"
+	base := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+	var threads []map[string]any
+	for i := 149; i >= 0; i-- { // newest first, like the API
+		threads = append(threads, map[string]any{
+			"id": strconv.Itoa(9000 + i), "name": fmt.Sprintf("post-%d", i), "type": 11,
+			"parent_id":       forum,
+			"owner_id":        "U1",
+			"thread_metadata": map[string]any{"archived": true, "locked": false, "archive_timestamp": base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339Nano)},
+		})
+	}
+	srv, calls := forumStub(t, forum, threads, false)
+	defer srv.Close()
+	out := t.TempDir()
+	if err := Run(context.Background(), testCfg(t, srv.URL, out)); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(out, "server_G", "channel_"+forum, "threads"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 150 {
+		t.Fatalf("archived %d threads, want 150 (pagination lost threads)", len(entries))
+	}
+	if *calls != 2 {
+		t.Fatalf("archived thread requests = %d, want 2", *calls)
+	}
+}
+
+// TestArchivedThreadPaginationStopsOnReplay: if the API ignores the cursor and
+// replays the page with has_more=true, the run must stop (and say so), not
+// re-fetch the same page forever. This is the "backup job seems hung" report.
+func TestArchivedThreadPaginationStopsOnReplay(t *testing.T) {
+	const forum = "F"
+	base := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+	var threads []map[string]any
+	for i := 99; i >= 0; i-- {
+		threads = append(threads, map[string]any{
+			"id": strconv.Itoa(9000 + i), "name": fmt.Sprintf("post-%d", i), "type": 11,
+			"parent_id":       forum,
+			"owner_id":        "U1",
+			"thread_metadata": map[string]any{"archived": true, "locked": false, "archive_timestamp": base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339Nano)},
+		})
+	}
+	srv, calls := forumStub(t, forum, threads, true)
+	defer srv.Close()
+	out := t.TempDir()
+	if err := Run(context.Background(), testCfg(t, srv.URL, out)); err != nil {
+		t.Fatal(err)
+	}
+	// page 1, the replay, and the step-back: then the guard stops it.
+	if *calls > 4 {
+		t.Fatalf("archived thread requests = %d, want <= 4: a replayed page must stop the scan", *calls)
+	}
+	entries, err := os.ReadDir(filepath.Join(out, "server_G", "channel_"+forum, "threads"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 100 {
+		t.Fatalf("archived %d threads, want the 100 it did see", len(entries))
+	}
+}
+
+// TestCatchUpAdvancesPastFilteredPage: a full page of bot messages must still
+// move the cursor. Advancing it only for stored messages re-fetches that page
+// forever - the run then writes nothing and logs nothing, looking hung.
+func TestCatchUpAdvancesPastFilteredPage(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	human := &fakeMsg{id: msgID(now.Add(-2 * time.Hour)), content: "human", ts: now.Add(-2 * time.Hour)}
+	var bots []*fakeMsg
+	for i := 0; i < 100; i++ {
+		ts := now.Add(-time.Duration(100-i) * time.Minute)
+		bots = append(bots, &fakeMsg{id: msgID(ts), content: "beep", ts: ts, bot: true})
+	}
+	fake := &fakeDiscord{msgs: []*fakeMsg{human}}
+	var afterCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/messages") && r.URL.Query().Get("after") != "" {
+			afterCalls++
+			if afterCalls > 8 {
+				// Same regression guard as above.
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte("[]"))
+				return
+			}
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	out := t.TempDir()
+	ctx := context.Background()
+	cfg := testCfg(t, srv.URL, out)
+	cfg.EditWindow = 0 // isolate the catch-up loop: no edit-window rescan
+
+	if err := Run(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	// A full page of bot messages arrives after the stored tip.
+	fake.msgs = append(fake.msgs, bots...)
+	if err := Run(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if afterCalls > 3 {
+		t.Fatalf("catch-up asked for the same cursor %d times, want <= 3: the cursor must follow the page", afterCalls)
+	}
+	if n := countLines(t, filepath.Join(channelDir(out), "messages.jsonl")); n != 1 {
+		t.Fatalf("bot messages archived: %d lines, want 1", n)
+	}
+}

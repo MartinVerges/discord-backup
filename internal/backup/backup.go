@@ -367,13 +367,15 @@ func (r *Runner) writePermissionSnapshot(ctx context.Context, guild *discord.Gui
 			if len(members) == 0 {
 				break
 			}
+			next := after
 			for _, m := range members {
 				snap.Members[m.User.ID] = perms.MemberRoles{Username: m.User.Username, Roles: m.Roles}
-				after = m.User.ID
+				next = m.User.ID
 			}
-			if len(members) < 1000 {
+			if len(members) < 1000 || next == after {
 				break
 			}
+			after = next
 		}
 	}
 
@@ -524,15 +526,17 @@ func (r *Runner) humanCount(ctx context.Context, guild *discord.Guild) (int, str
 		if len(members) == 0 {
 			break
 		}
+		next := after
 		for _, m := range members {
 			if !m.User.Bot {
 				count++
 			}
-			after = m.User.ID
+			next = m.User.ID
 		}
-		if len(members) < 1000 {
+		if len(members) < 1000 || next == after {
 			break
 		}
+		after = next
 	}
 	return count, "exact"
 }
@@ -832,6 +836,11 @@ func (r *Runner) backupLog(ctx context.Context, dir, logID, label string) (*logS
 			}
 			fb.tick(len(page))
 			sortRawAsc(page)
+			// The cursor follows the page, not the stored messages: a page
+			// that is entirely filtered out (bot messages with the default
+			// setting) would otherwise leave `after` untouched and re-fetch
+			// the same page forever.
+			next := mustID(page[len(page)-1])
 			var batch [][]byte
 			for _, raw := range page {
 				env, err := discord.ParseEnvelope(raw)
@@ -853,7 +862,6 @@ func (r *Runner) backupLog(ctx context.Context, dir, logID, label string) (*logS
 				}
 				batch = append(batch, line)
 				tipID = env.ID
-				after = env.ID
 				stats.attachments = append(stats.attachments, attachItems(dir, env)...)
 			}
 			if len(batch) > 0 {
@@ -863,6 +871,11 @@ func (r *Runner) backupLog(ctx context.Context, dir, logID, label string) (*logS
 				}
 				stats.added += n
 			}
+			if next == "" || next == after {
+				r.log.Warn("message cursor did not advance, stopping catch-up", "log", label, "cursor", after)
+				break
+			}
+			after = next
 			if len(page) < 100 {
 				break
 			}
@@ -973,6 +986,7 @@ func (r *Runner) backfillSince(ctx context.Context, dir, logID, label string, st
 		}
 		fb.tick(len(page))
 		sortRawAsc(page)
+		next := mustID(page[len(page)-1])
 		var batch [][]byte
 		for _, raw := range page {
 			env, err := discord.ParseEnvelope(raw)
@@ -992,7 +1006,6 @@ func (r *Runner) backfillSince(ctx context.Context, dir, logID, label string, st
 			}
 			batch = append(batch, line)
 			tipID = env.ID
-			after = env.ID
 			stats.attachments = append(stats.attachments, attachItems(dir, env)...)
 		}
 		if len(batch) > 0 {
@@ -1002,6 +1015,11 @@ func (r *Runner) backfillSince(ctx context.Context, dir, logID, label string, st
 			}
 			stats.added += n
 		}
+		if next == "" || next == after {
+			r.log.Warn("message cursor did not advance, stopping --since backfill", "log", label, "cursor", after)
+			break
+		}
+		after = next
 		if len(page) < 100 {
 			break
 		}
@@ -1236,6 +1254,7 @@ outer:
 			break
 		}
 		sortRawAsc(page)
+		next := mustID(page[len(page)-1])
 		for _, raw := range page {
 			env, err := discord.ParseEnvelope(raw)
 			if err != nil {
@@ -1249,12 +1268,16 @@ outer:
 				return 0, 0, err
 			}
 			remote = append(remote, remoteMsg{env: env, raw: line})
-			after = env.ID
 			if len(remote) >= reconcileCap {
 				truncated = true
 				break outer
 			}
 		}
+		if next == "" || next == after {
+			r.log.Warn("edit window cursor did not advance, skipping the rest", "log", label, "cursor", after)
+			break
+		}
+		after = next
 		if len(page) < 100 {
 			break
 		}
@@ -1573,8 +1596,11 @@ func (r *Runner) backupThreads(ctx context.Context, dir string, ch discord.Chann
 		}
 	}
 	add(active)
+
+	pages, lastBeat := 0, time.Now()
 	for _, kind := range []string{"public", "private", "joined"} {
 		before := ""
+		stepped := false
 		for {
 			page, more, err := r.api.ArchivedThreads(ctx, ch.ID, kind, before, 100)
 			if err != nil {
@@ -1586,17 +1612,54 @@ func (r *Runner) backupThreads(ctx context.Context, dir string, ch discord.Chann
 				}
 				return 0, nil, fmt.Errorf("archived threads (%s): %w", kind, err)
 			}
+			pages++
+			known := len(seen)
 			add(page)
 			if !more || len(page) == 0 {
 				break
 			}
-			// Cursor = archive timestamp of the oldest thread seen.
-			oldest := page[len(page)-1]
-			if oldest.ThreadMeta == nil || oldest.ThreadMeta.ArchiveTimestamp == "" {
+			next, ok := threadCursor(kind, page)
+			if !ok {
+				log.Warn("archived threads: page without a usable cursor, stopping",
+					"kind", kind, "pages", pages, "threads", len(seen))
 				break
 			}
-			before = oldest.ThreadMeta.ArchiveTimestamp
+			if len(seen) == known {
+				// The API replayed a page we already have: `before` was
+				// inclusive, or it compares with a coarser precision than
+				// the timestamp it returns. Step one second further back,
+				// once - a plain "same cursor again" rule would loop here
+				// forever, which is the hang this guard exists for.
+				if stepped {
+					log.Warn("archived threads: cursor stopped advancing, stopping",
+						"kind", kind, "pages", pages, "threads", len(seen))
+					break
+				}
+				stepped = true
+				back, ok := stepBack(next, kind)
+				if !ok {
+					log.Warn("archived threads: cursor cannot be stepped back, stopping",
+						"kind", kind, "pages", pages, "threads", len(seen))
+					break
+				}
+				next = back
+			} else {
+				stepped = false
+			}
+			if next == before {
+				log.Warn("archived threads: cursor did not change, stopping",
+					"kind", kind, "pages", pages, "threads", len(seen))
+				break
+			}
+			before = next
+			if time.Since(lastBeat) >= beatEvery {
+				log.Info("scanning archived threads", "kind", kind, "pages", pages, "threads", len(seen))
+				lastBeat = time.Now()
+			}
 		}
+	}
+	if len(seen) > 0 {
+		log.Info("archived threads scanned", "threads", len(seen), "pages", pages)
 	}
 
 	ids := make([]string, 0, len(seen))
@@ -1604,9 +1667,13 @@ func (r *Runner) backupThreads(ctx context.Context, dir string, ch discord.Chann
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	for _, id := range ids {
+	for i, id := range ids {
 		if err := ctx.Err(); err != nil {
 			return 0, nil, err
+		}
+		if time.Since(lastBeat) >= beatEvery {
+			log.Info("thread backup progress", "done", i, "of", len(ids))
+			lastBeat = time.Now()
 		}
 		t := seen[id]
 		tdir := filepath.Join(dir, "threads", "thread_"+t.ID)
@@ -1673,4 +1740,43 @@ func (r *Runner) backupThreads(ctx context.Context, dir string, ch discord.Chann
 		count++
 	}
 	return count, items, nil
+}
+
+// threadCursor builds the `before` value for the next archived-thread page
+// from the last (oldest) thread of the current one. The two endpoints do not
+// agree on the type: public and private archived threads page by
+// archive_timestamp (ISO8601), joined private threads page by thread id
+// (snowflake) and are ordered by id, so a single cursor type would be wrong
+// for one of them. ok is false when the page carries no usable cursor - the
+// caller must stop rather than send the same request forever.
+func threadCursor(kind string, page []discord.Channel) (string, bool) {
+	if len(page) == 0 {
+		return "", false
+	}
+	oldest := page[len(page)-1]
+	if kind == "joined" {
+		return oldest.ID, oldest.ID != ""
+	}
+	if oldest.ThreadMeta == nil || oldest.ThreadMeta.ArchiveTimestamp == "" {
+		return "", false
+	}
+	ts, err := time.Parse(time.RFC3339Nano, oldest.ThreadMeta.ArchiveTimestamp)
+	if err != nil {
+		return "", false
+	}
+	return ts.UTC().Format(time.RFC3339Nano), true
+}
+
+// stepBack moves a timestamp cursor one second earlier. Thread ids cannot be
+// stepped (they are not a continuous scale), which is what makes a replayed
+// joined-private page unrecoverable - the caller then stops.
+func stepBack(cursor, kind string) (string, bool) {
+	if kind == "joined" {
+		return "", false
+	}
+	ts, err := time.Parse(time.RFC3339Nano, cursor)
+	if err != nil {
+		return "", false
+	}
+	return ts.Add(-time.Second).UTC().Format(time.RFC3339Nano), true
 }
