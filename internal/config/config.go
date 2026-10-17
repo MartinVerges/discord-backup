@@ -127,6 +127,7 @@ type BackupOptions struct {
 type MCPOptions struct {
 	HTTPAddr            string
 	DefaultPrincipal    string
+	Deleted             string // "hide" (default) or "show"
 	ShowDeleted         bool
 	RefreshTTL          time.Duration
 	ChannelTTL          time.Duration
@@ -177,6 +178,11 @@ func parse(raw []byte) (*Config, *Options, error) {
 	return &c, opts, nil
 }
 
+// validate checks the whole document: shared fields and values that are
+// malformed no matter which command runs (a required key, a negative number, an
+// unparseable duration). Requirements that belong to one command only live in
+// CheckBackup / CheckMCP instead, so a problem in the "mcp" section cannot stop
+// the backup.
 func (c *Config) validate() error {
 	if strings.TrimSpace(c.ArchiveDir) == "" {
 		return fmt.Errorf("archive_dir is required")
@@ -187,35 +193,50 @@ func (c *Config) validate() error {
 	if c.Backup.Limit < 0 {
 		return fmt.Errorf("backup.limit must be >= 0")
 	}
-	if c.Backup.Limit > 0 && strings.TrimSpace(c.Backup.Since) != "" {
-		return fmt.Errorf("backup.limit and backup.since are mutually exclusive")
-	}
 	if c.Backup.AttachMaxMB < 0 {
 		return fmt.Errorf("backup.attach_max_mb must be >= 0")
 	}
 	if c.Backup.AttachWorkers < 0 {
 		return fmt.Errorf("backup.attach_workers must be >= 0")
 	}
-	switch c.MCP.Deleted {
-	case "", "hide", "show":
+	return nil
+}
+
+// CheckBackup reports requirements only the backup command has.
+func (o *Options) CheckBackup() error {
+	if o.Backup.Limit > 0 && !o.Backup.Since.IsZero() {
+		return fmt.Errorf("backup.limit and backup.since are mutually exclusive")
+	}
+	return nil
+}
+
+// CheckMCP reports requirements only the MCP command has: at least one
+// principal, a sane deleted mode, unique tokens, and a bearer token whenever an
+// HTTP listen address is configured. None of this can stop the backup.
+func (o *Options) CheckMCP() error {
+	switch o.MCP.Deleted {
+	case "hide", "show":
 	default:
 		return fmt.Errorf(`mcp.deleted must be "hide" or "show"`)
 	}
+	if len(o.MCP.Principals) == 0 {
+		return fmt.Errorf(`no principals configured: add "mcp.principals"`)
+	}
 	seen := map[string]bool{}
 	tokens := map[string]string{}
-	for i := range c.MCP.Principals {
-		p := &c.MCP.Principals[i]
+	for i := range o.MCP.Principals {
+		p := &o.MCP.Principals[i]
 		if strings.TrimSpace(p.Name) == "" {
 			return fmt.Errorf("mcp.principals[%d]: name is required", i)
-		}
-		if strings.TrimSpace(p.DiscordID) == "" {
-			return fmt.Errorf("mcp.principals[%d] (%s): discord_id is required", i, p.Name)
 		}
 		key := strings.ToLower(p.Name)
 		if seen[key] {
 			return fmt.Errorf("duplicate principal name %q", p.Name)
 		}
 		seen[key] = true
+		if strings.TrimSpace(p.DiscordID) == "" {
+			return fmt.Errorf("mcp.principals[%d] (%s): discord_id is required", i, p.Name)
+		}
 		if p.Token != "" {
 			if other, dup := tokens[p.Token]; dup {
 				return fmt.Errorf("principals %q and %q share the same token", other, p.Name)
@@ -223,10 +244,10 @@ func (c *Config) validate() error {
 			tokens[p.Token] = p.Name
 		}
 	}
-	if c.MCP.HTTPAddr != "" && len(tokens) == 0 {
-		return fmt.Errorf(`mcp.http_addr is set but no principal has a "token"`)
+	if o.MCP.HTTPAddr == "" || len(tokens) > 0 {
+		return nil
 	}
-	return nil
+	return fmt.Errorf(`mcp.http_addr is set but no principal has a "token"`)
 }
 
 func (c *Config) options() (*Options, error) {
@@ -279,7 +300,11 @@ func (c *Config) options() (*Options, error) {
 	m := &o.MCP
 	m.HTTPAddr = strings.TrimSpace(c.MCP.HTTPAddr)
 	m.DefaultPrincipal = strings.TrimSpace(c.MCP.DefaultPrincipal)
-	m.ShowDeleted = c.MCP.Deleted == "show"
+	m.Deleted = "hide"
+	if c.MCP.Deleted != "" {
+		m.Deleted = c.MCP.Deleted
+	}
+	m.ShowDeleted = m.Deleted == "show"
 	m.CheckPrivateThreads = c.MCP.CheckPrivateThreads
 	m.AuditLog = strings.TrimSpace(c.MCP.AuditLog)
 	m.Principals = c.MCP.Principals

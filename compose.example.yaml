@@ -44,7 +44,7 @@ services:
       - "127.0.0.1:8765:8765"
     healthcheck:
       # distroless has no shell/curl, so the binary probes its own endpoint.
-      test: ["CMD", "/usr/local/bin/discord-backup", "healthcheck", "--url", "http://127.0.0.1:8765/healthz"]
+      test: ["CMD", "/usr/local/bin/discord-backup", "healthcheck", "--config", "/etc/discord-backup.json"]
       interval: 30s
       timeout: 5s
       retries: 3

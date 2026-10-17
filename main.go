@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -49,19 +50,24 @@ func main() {
 
 // runHealthcheck probes a running MCP HTTP endpoint and exits 0 on success.
 // It exists so a container healthcheck works on distroless, which ships no
-// shell, curl or wget.
+// shell, curl or wget. The endpoint can be derived from the configuration
+// (mcp.http_addr) so no address is duplicated in the compose file.
 func runHealthcheck(args []string) int {
 	fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	url := fs.String("url", "http://127.0.0.1:8765/healthz", "health endpoint to probe")
+	configPath := fs.String("config", "", "configuration file; the endpoint comes from mcp.http_addr")
+	url := fs.String("url", "", "health endpoint to probe (overrides --config)")
 	timeout := fs.Duration("timeout", 3*time.Second, "request timeout")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, `discord-backup healthcheck: exit 0 when the MCP HTTP endpoint answers.
 
 Usage:
+  discord-backup healthcheck --config /etc/discord-backup.json
   discord-backup healthcheck --url http://127.0.0.1:8765/healthz
 
 Options:
+  --config PATH    configuration file; probes http://<mcp.http_addr>/healthz
+                   (also fails when the config itself is invalid)
   --url URL        health endpoint to probe (default http://127.0.0.1:8765/healthz)
   --timeout dur    request timeout (default 3s)
 `)
@@ -72,7 +78,22 @@ Options:
 		}
 		return 2
 	}
-	resp, err := (&http.Client{Timeout: *timeout}).Get(*url)
+	target := *url
+	if target == "" {
+		addr := "127.0.0.1:8765"
+		if *configPath != "" {
+			opts, err := config.Load(*configPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
+				return 1
+			}
+			if opts.MCP.HTTPAddr != "" {
+				addr = opts.MCP.HTTPAddr
+			}
+		}
+		target = "http://" + probeAddr(addr) + "/healthz"
+	}
+	resp, err := (&http.Client{Timeout: *timeout}).Get(target)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
 		return 1
@@ -83,6 +104,20 @@ Options:
 		return 1
 	}
 	return 0
+}
+
+// probeAddr turns a listen address into something dialable: a wildcard bind
+// (":8765", "0.0.0.0:8765", "[::]:8765") is probed on loopback.
+func probeAddr(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return listen
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // runBackup runs one backup pass, or – when the config sets backup.every – a
@@ -101,7 +136,7 @@ func runBackup(args []string) int {
 Usage:
   discord-backup [--config %s] [--list-channels]
   discord-backup mcp --config %s [--principal NAME | --http]
-  discord-backup healthcheck --url http://127.0.0.1:8765/healthz
+  discord-backup healthcheck --config /etc/discord-backup.json
 
 Everything lives in one configuration file (default %q): token, guild,
 archive_dir, backup settings and MCP settings. Start from config.example.json.
@@ -143,6 +178,10 @@ waits 15m after each pass, then backs up again.
 	}
 	if opts.Token == "" {
 		log.Error("no bot token: set \"token\" in " + *configPath)
+		return 1
+	}
+	if err := opts.CheckBackup(); err != nil {
+		log.Error("config", "err", err)
 		return 1
 	}
 	if *listCh && opts.Backup.Every > 0 {
@@ -257,8 +296,8 @@ is the offline fallback when Discord is unreachable. The listen address for
 		log.Error("config", "err", err)
 		return 1
 	}
-	if len(opts.MCP.Principals) == 0 {
-		log.Error("no principals configured: add \"mcp.principals\" to " + *configPath)
+	if err := opts.CheckMCP(); err != nil {
+		log.Error("config", "err", err)
 		return 1
 	}
 	settings := mcp.Settings{

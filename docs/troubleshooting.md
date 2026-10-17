@@ -38,6 +38,20 @@ catches up. If the message persists, a process is stuck (`ps aux | grep discord-
 - `config … holds tokens and must not be group/world accessible`: `chmod 600 config.json`.
 - `401 Unauthorized`: token wrong/expired → regenerate via **Reset Token** in the portal.
 
+## Config errors
+
+- `mcp.http_addr is set but no principal has a "token"`: the HTTP transport
+  authenticates every caller with their own bearer token, so each principal that
+  may connect needs one (`openssl rand -hex 32`). Only the MCP minds this – the
+  backup starts anyway, because it never touches the `mcp` section.
+- `no principals configured: add "mcp.principals"`: the MCP needs at least one
+  identity mapping (name/email/alias → `discord_id`).
+- `unknown field "..."`: a typo – unknown keys are rejected on purpose, so a
+  misspelled setting fails loudly instead of being ignored.
+- Edits to `config.json` take effect only after a restart (the file is read once
+  at start-up): `docker compose up -d --force-recreate backup`, or restart the
+  systemd unit/cron never needs it.
+
 ## Rate limits / slow first run
 
 Normal: Discord throttles requests, the tool complies and patiently backfills history.

@@ -66,7 +66,7 @@ so a typo is an error instead of a silently ignored setting.
 | `include_bots` | `false` | Also archive bot and webhook messages |
 | `skip_empty` | `true` | Skip channels with no access or zero messages |
 | `edit_window` | `"48h"` | Window for edit/delete detection (`"0"` = new messages only) |
-| `attach_max_mb` | `50` | Max attachment size in MB |
+| `attach_max_mb` | `50` | Max attachment size in MB; `0` means the default `50` (there is no "unlimited") |
 | `attach_workers` | `4` | Parallel attachment downloads |
 | `every` | `""` (once) | Service mode: wait this long **after** each pass, then back up again |
 | `limit` | `0` (= unlimited) | Initial backfill cap per channel/thread, newest N (first run only); mutually exclusive with `since` |
@@ -103,6 +103,25 @@ Since every setting lives in the config, the CLI is small:
 | `--http` | Serve HTTP instead of stdio (mcp) |
 | `--quiet` | Only log warnings and errors |
 | `--version` | Print version and exit |
+
+Plus the `healthcheck` subcommand, which needs no config of its own:
+
+```
+discord-backup healthcheck --config /etc/discord-backup.json   # probes mcp.http_addr
+discord-backup healthcheck --url http://127.0.0.1:8765/healthz
+```
+
+### Which section is enforced when
+
+Validation is split so one command cannot be blocked by the other's section:
+the backup enforces `backup.*` only (e.g. `limit` with `since` is rejected), the
+MCP enforces `mcp.*` only (at least one principal, `deleted`, and a principal
+token whenever `http_addr` is set). Malformed values – an unknown key, a bad
+duration, a negative number, a missing `guild_id`/`archive_dir` – are document
+errors and stop both.
+
+The config is read **once at start-up**; after editing it, restart the process
+(or container) for the change to take effect.
 
 ## Examples
 

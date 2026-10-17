@@ -160,7 +160,7 @@ services:
     ports:
       - "127.0.0.1:8765:8765"         # keep local; add a TLS proxy to expose
     healthcheck:
-      test: ["CMD", "/usr/local/bin/discord-backup", "healthcheck", "--url", "http://127.0.0.1:8765/healthz"]
+      test: ["CMD", "/usr/local/bin/discord-backup", "healthcheck", "--config", "/etc/discord-backup.json"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -171,15 +171,24 @@ Points that matter:
 
 - **Healthcheck without a shell.** The distroless image ships no shell, `curl`
   or `wget`, so the healthcheck execs the binary itself:
-  `discord-backup healthcheck --url http://127.0.0.1:8765/healthz` exits `0`
-  exactly when `/healthz` answers `200`.
+  `discord-backup healthcheck --config /etc/discord-backup.json` probes
+  `http://<mcp.http_addr>/healthz` and exits `0` exactly when it answers `200`.
+  Taking the address from the config means it cannot drift from what the server
+  binds, and a broken config is reported as unhealthy instead of unnoticed.
 - **One config, one secret rule.** No environment variables, no token file: the
   bot token and the principals' bearer tokens all sit in `config.json`. Because
   it holds tokens it must be mode `0600` **and** readable by uid `65532`, hence
   the `chmod`/`chown`. Docker/Compose *secrets* are mounted `0444` by default
   and would be rejected; a bind-mounted file is simpler here.
+- **Only your own section is enforced.** The backup validates `backup.*`, the
+  MCP validates `mcp.*`; an unfinished `mcp` section cannot stop the backup.
+  (Malformed values – a bad duration, a negative number – are document errors
+  and always fail.)
 - **Share one archive.** The backup writes `./archive`; the MCP mounts the same
   directory (`:ro`). `archive_dir` must be the container path `/data` for both.
+- **`audit_log` needs a writable path.** The MCP's archive mount is read-only,
+  so an `audit_log` inside it fails; mount a second volume (or use `/tmp`) and
+  point `mcp.audit_log` at it.
 - **Backup and MCP in parallel is fine.** The archive is append-only and the
   reader detects rewrites; a backup running while clients query causes no
   inconsistency. See [mcp.md](mcp.md).
@@ -191,4 +200,6 @@ Points that matter:
 
 - HTTPS to Discord works out of the box (distroless ships CA certificates).
 - The lock file lives at `<archive_dir>/.lock` – overlapping `docker run` calls exit cleanly like the binary does.
+- A running container reads `config.json` **once at start**: changing it needs a
+  restart (`docker compose up -d --force-recreate backup`).
 - No healthcheck needed for the **backup** container: in service mode it is alive as long as the loop runs, and a failing pass only logs; the **MCP** service has one, above.

@@ -22,14 +22,22 @@ func writeConfig(t *testing.T, name, body string, mode os.FileMode) string {
 }
 
 // TestExampleConfigParses keeps the shipped config.example.json valid: every
-// key it uses must exist, and its values must pass validation.
+// key it uses must exist, its values must pass validation, and both commands
+// must accept it as-is (so copying it and adding a token really works).
 func TestExampleConfigParses(t *testing.T) {
 	raw, err := os.ReadFile("../../config.example.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Parse(raw); err != nil {
+	o, err := Parse(raw)
+	if err != nil {
 		t.Fatalf("config.example.json does not parse: %v", err)
+	}
+	if err := o.CheckBackup(); err != nil {
+		t.Fatalf("config.example.json is not a valid backup config: %v", err)
+	}
+	if err := o.CheckMCP(); err != nil {
+		t.Fatalf("config.example.json is not a valid MCP config: %v", err)
 	}
 }
 
@@ -141,18 +149,72 @@ func TestLoadRejectsBadConfig(t *testing.T) {
 		"unknown field":  `{` + valid + `,"nope":1}`,
 		"no guild":       `{"archive_dir":"/data","token":"t"}`,
 		"no archive":     `{"guild_id":"G","token":"t"}`,
-		"limit + since":  `{` + valid + `,"backup":{"limit":10,"since":"2026-01-01"}}`,
 		"bad since":      `{` + valid + `,"backup":{"since":"yesterday"}}`,
 		"bad duration":   `{` + valid + `,"backup":{"every":"soon"}}`,
 		"bad deleted":    `{` + valid + `,"mcp":{"deleted":"maybe"}}`,
 		"duplicate name": `{` + valid + `,"mcp":{"principals":[{"name":"a","discord_id":"1"},{"name":"A","discord_id":"2"}]}}`,
 		"shared token":   `{` + valid + `,"mcp":{"principals":[{"name":"a","discord_id":"1","token":"x"},{"name":"b","discord_id":"2","token":"x"}]}}`,
-		"http no token":  `{` + valid + `,"mcp":{"http_addr":"127.0.0.1:1","principals":[{"name":"a","discord_id":"1"}]}}`,
 		"no discord_id":  `{` + valid + `,"mcp":{"principals":[{"name":"a"}]}}`,
 	} {
 		if _, err := Load(writeConfig(t, "bad.json", "{"+body+"}", 0o600)); err == nil {
 			t.Fatalf("%s: expected an error", name)
 		}
+	}
+}
+
+// TestCommandScopedChecks pins the split between shared validation and the
+// per-command checks: a problem that only affects the MCP must not stop the
+// backup, and a backup-only problem must not stop the MCP.
+func TestCommandScopedChecks(t *testing.T) {
+	// http_addr without any principal token: Load is fine (the backup does not
+	// care), the MCP refuses.
+	p := writeConfig(t, "scoped.json", `{
+		"guild_id": "G", "archive_dir": "/data", "token": "t",
+		"backup": {"limit": 10, "since": "2026-01-01"},
+		"mcp": {"http_addr": "127.0.0.1:1",
+		        "principals": [{"name": "a", "discord_id": "1"}]}
+	}`, 0o600)
+	o, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load must not enforce command-specific rules: %v", err)
+	}
+	if err := o.CheckBackup(); err == nil {
+		t.Fatal("backup: limit+since must be rejected")
+	} else if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("backup error unclear: %v", err)
+	}
+	if err := o.CheckMCP(); err == nil {
+		t.Fatal("mcp: http_addr without a token must be rejected")
+	} else if !strings.Contains(err.Error(), "token") {
+		t.Fatalf("mcp error unclear: %v", err)
+	}
+
+	// The mirror image: an MCP problem must not make the backup fail, and a
+	// backup problem must not make the MCP fail.
+	p = writeConfig(t, "fine.json", `{
+		"guild_id": "G", "archive_dir": "/data", "token": "t",
+		"mcp": {"principals": [{"name": "a", "discord_id": "1", "token": "x"}]}
+	}`, 0o600)
+	if o, err := Load(p); err != nil {
+		t.Fatal(err)
+	} else if err := o.CheckBackup(); err != nil {
+		t.Fatalf("backup must accept a config with an incomplete test of mcp: %v", err)
+	} else if err := o.CheckMCP(); err != nil {
+		t.Fatalf("mcp must accept a valid mcp section: %v", err)
+	}
+
+	// No principals at all: only the MCP minds.
+	p = writeConfig(t, "no-principals.json",
+		`{"guild_id":"G","archive_dir":"/data","token":"t"}`, 0o600)
+	o, err = Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := o.CheckBackup(); err != nil {
+		t.Fatalf("backup must not require principals: %v", err)
+	}
+	if err := o.CheckMCP(); err == nil {
+		t.Fatal("mcp must require at least one principal")
 	}
 }
 

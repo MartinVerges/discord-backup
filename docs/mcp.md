@@ -138,6 +138,10 @@ chmod 600 config.json        # required: the file holds tokens
 The keys outside `mcp` (`guild_id`, `archive_dir`, `token`) are shared with the
 backup – `archive_dir` is where `server_<id>` lives.
 
+The MCP only enforces the `mcp` section (principals, `deleted`, the HTTP token
+rule); settings under `backup` are ignored here, just as the backup ignores
+`mcp`. A malformed value (a bad duration, a negative number) fails in both.
+
 ### Principals
 
 A **principal** maps a person – addressed by `name`, `email`, `discord_id` or
@@ -176,9 +180,11 @@ The listen address is `mcp.http_addr` (default `127.0.0.1:8765`). Bind to
 
 #### Healthcheck
 
-`discord-backup healthcheck --url http://127.0.0.1:8765/healthz` exits `0`
-exactly when `/healthz` answers `200`. Use it where there is no shell or `curl`
-(notably the distroless image); see [docker.md](docker.md).
+`discord-backup healthcheck --config /etc/discord-backup.json` probes
+`http://<mcp.http_addr>/healthz` and exits `0` exactly when it answers `200`
+(a wildcard address like `0.0.0.0:8765` is probed on loopback). Use it where
+there is no shell or `curl` (notably the distroless image); `--url` overrides
+the derived endpoint. See [docker.md](docker.md).
 
 ### Flags
 

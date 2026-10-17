@@ -1,6 +1,6 @@
 # Installation
 
-Requirement: Go 1.24 or newer (`go version`).
+Requirement: Go 1.27 or newer (`go version`).
 
 ```bash
 git clone <repo-url> discord-backup
