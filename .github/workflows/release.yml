@@ -25,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the changelog needs the history, not just the tag
       - uses: actions/setup-go@v5
         with:
           go-version: stable
@@ -64,7 +66,25 @@ jobs:
           (cd dist && sha256sum ./*.tar.gz ./*.zip >checksums.txt)
           ls -l dist
 
+      # The release body comes from the commits, not from GitHub's generated
+      # notes: those list merged pull requests, and this repository commits to
+      # main directly, so they would come out empty. Solid changelogs.
+      - name: Write the release notes
+        run: |
+          set -eu
+          prev=$(git tag --list --sort=-creatordate '[0-9]*' 'v*' | grep -v "^$GITHUB_REF_NAME$" | head -1 || true)
+          if [ -n "$prev" ]; then
+            echo "Changes since \`$prev\`:"
+            echo
+            git log --no-merges --pretty='- %s' "$prev..$GITHUB_REF_NAME"
+            echo
+            echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$prev...$GITHUB_REF_NAME"
+          else
+            git log --no-merges --pretty='- %s' "$GITHUB_REF_NAME"
+          fi >RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
