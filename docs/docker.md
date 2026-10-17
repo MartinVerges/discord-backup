@@ -2,10 +2,16 @@
 
 Prebuilt images (amd64 + arm64), published by the Docker workflow:
 
-- `ghcr.io/martinverges/discord-backup:latest` – built from every `main` commit
+- `ghcr.io/martinverges/discord-backup:latest` – built from every `main` commit,
+  so it moves; it is not a release and reports the version `dev`
 - `ghcr.io/martinverges/discord-backup:2610.1` – built from the `2610.1` tag
   (see [Releases](../README.md#releases) for the `YYMM.x` scheme; `:v0.1.0` was
   the last image under the old `vX.Y.Z` naming)
+
+Pin the tag (`image: …:2610.1`) when a deployment should not change under you:
+`latest` follows `main`, and the version the container reports
+(`discord-backup --version`, and the `initialize` handshake of the MCP) is the
+tag it was built from.
 
 (Binaries for Linux/macOS/Windows live on the Releases page; the Release
 workflow builds those, images are published separately.)
