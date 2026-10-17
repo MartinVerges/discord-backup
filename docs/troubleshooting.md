@@ -112,10 +112,15 @@ connection error means nothing is listening on the published port.
 
 - `mcp.http_addr is set but no principal has a "token"`: the HTTP transport
   authenticates every caller with their own bearer token, so each principal that
-  may connect needs one (`openssl rand -hex 32`). Only the MCP minds this – the
-  backup starts anyway, because it never touches the `mcp` section.
+  may connect needs one (`discord-backup principals --config config.json`
+  generates them, `openssl rand -hex 32` works too). Only the MCP minds this –
+  the backup starts anyway, because it never touches the `mcp` section.
 - `no principals configured: add "mcp.principals"`: the MCP needs at least one
-  identity mapping (name/email/alias → `discord_id`).
+  identity mapping (name/email/alias → `discord_id`). `discord-backup principals
+  --config config.json` builds it from the guild's member list.
+- `Discord refused the member list (403)` (from `principals`): the bot lacks the
+  privileged **Server Members Intent** – Developer Portal → your app → Bot →
+  Privileged Gateway Intents.
 - `unknown field "..."`: a typo – unknown keys are rejected on purpose, so a
   misspelled setting fails loudly instead of being ignored.
 - `config … holds tokens and must not be group/world accessible`: `chmod 600 config.json`.

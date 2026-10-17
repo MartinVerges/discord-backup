@@ -67,6 +67,10 @@ read in Discord:
 #   "mcp": { "principals": [
 #     { "name": "martin", "discord_id": "123456789012345678" } ] }
 
+# Build that list from the guild member list instead of copying IDs by hand
+# (prints a ready-to-paste block; --write merges it into the config):
+./discord-backup principals --config config.json
+
 # stdio for Claude Desktop/Code, --http for remote
 ./discord-backup mcp --config config.json
 ```

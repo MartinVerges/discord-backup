@@ -118,7 +118,8 @@ refuses to start otherwise.
 
 ```bash
 chmod 600 config.json        # required: the file holds tokens
-# generate each principal token with: openssl rand -hex 32
+# generate names, IDs and tokens with:
+#   discord-backup principals --config config.json
 ```
 
 | Key under `mcp` | Default | Meaning |
@@ -151,6 +152,63 @@ they can see. That is the whole identity mapping: no passwords, no accounts.
 `token` is the bearer token the HTTP transport requires for that principal.
 Tokens must be unique; if `http_addr` is set, at least one principal needs one
 (the server also refuses to start the HTTP transport without any token).
+
+#### Building the list from Discord
+
+Nobody has to copy user IDs by hand:
+
+```bash
+discord-backup principals --config config.json
+```
+
+It reads `guild_id` and `token` from the same config, asks Discord for the
+member list and prints a ready-to-paste block. stdout is the block:
+
+```json
+    "principals": [
+      {
+        "name": "martin",
+        "discord_id": "111111111111111111",
+        "token": "lXh3iCz9…"
+      }
+    ]
+```
+
+stderr is the human summary (`Test Guild: 74 members (68 human), 3 already
+configured, 65 new`). What it does:
+
+- **Additive and idempotent.** Existing principals are copied over untouched,
+  tokens included, and members that are already configured are skipped – a
+  second run changes nothing and never breaks a running client.
+- **Names** are the Discord usernames (unique per account). A name that is
+  already taken gets the last four digits of the user ID appended.
+- **Tokens** are 32 random bytes (base64url), one per new principal.
+  `--no-token` leaves them out: stdio needs none, only HTTP does.
+- **`email` and `aliases` stay empty**: a bot cannot read e-mail addresses.
+  Add them by hand if you match people by those.
+- **Bots** are skipped (`--include-bots` keeps them – a bot is a client, not a
+  person).
+- Listing members needs the privileged **Server Members Intent**; without it
+  Discord answers `403` and the command says which switch to flip.
+
+`--write` merges the result into the config instead of printing it (atomically,
+mode `0600`, every other value untouched) and prints a `NAME DISCORD_ID TOKEN`
+table, so the tokens can be handed out. The plain command writes nothing, which
+is why it is the easy one inside a container whose config is mounted read-only:
+
+```bash
+docker compose exec backup /usr/local/bin/discord-backup \
+  principals --config /etc/discord-backup.json
+```
+
+For `--write` the config *and its directory* must be writable by the user
+running the command; the shipped compose mounts the file read-only, so use a
+writable copy or run the binary where the config lives. Restart the server
+afterwards (`docker compose up -d`) – the config is read once at start-up.
+
+Change the config with an invalid value and the command refuses to write at all
+(duplicate name, duplicate ID, duplicate token), so a broken list cannot end up
+on disk.
 
 ## Running
 

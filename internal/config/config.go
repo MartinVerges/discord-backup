@@ -93,11 +93,13 @@ type MCP struct {
 type Principal struct {
 	Name      string   `json:"name"`
 	DiscordID string   `json:"discord_id"`
-	Email     string   `json:"email"`
-	Aliases   []string `json:"aliases"`
+	Email     string   `json:"email,omitempty"`
+	Aliases   []string `json:"aliases,omitempty"`
 	// Token is the bearer token the HTTP transport requires for this
 	// principal. Required for HTTP, unique per principal.
-	Token string `json:"token"`
+	// omitempty keeps "discord-backup principals" output clean: an empty
+	// token simply does not show up in the pasted or written config.
+	Token string `json:"token,omitempty"`
 }
 
 // Options is the configuration with defaults applied, durations parsed and

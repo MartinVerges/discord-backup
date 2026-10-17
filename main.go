@@ -44,6 +44,8 @@ func main() {
 			os.Exit(runMCP(os.Args[2:]))
 		case "healthcheck":
 			os.Exit(runHealthcheck(os.Args[2:]))
+		case "principals":
+			os.Exit(runPrincipals(os.Args[2:]))
 		}
 	}
 	os.Exit(runBackup(os.Args[1:]))
@@ -181,18 +183,20 @@ Usage:
   discord-backup [--config %s] [--list-channels]
   discord-backup mcp --config %s [--principal NAME | --http]
   discord-backup healthcheck --config /etc/discord-backup.json
+  discord-backup principals --config %s [--write]
 
 Everything lives in one configuration file (default %q): token, guild,
 archive_dir, backup settings and MCP settings. Start from config.example.json.
 
 Options:
-`, defaultConfigPath, defaultConfigPath, defaultConfigPath)
+`, defaultConfigPath, defaultConfigPath, defaultConfigPath, defaultConfigPath)
 		printFlags(fs)
 		fmt.Fprintf(os.Stderr, `
 Examples:
   discord-backup                              # one pass, ./config.json
   discord-backup --config /etc/db.json --list-channels
   discord-backup mcp --config config.json     # read-only MCP server (stdio)
+  discord-backup principals --config config.json  # who can reach it (mcp.principals)
 
 Service without cron – configured, not flagged:
   {"backup": {"every": "15m", "download_attachments": true}}
