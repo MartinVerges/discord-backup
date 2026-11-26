@@ -1,0 +1,18 @@
+[Unit]
+Description=Discord Backup Service (native binary)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Mount-Check: Archiv muss existieren und beschreibbar sein, bevor der Backup startet.
+ExecStartPre=/bin/bash -c 'test -d "/discord/archive" && test -w "/backup/discord/archive"'
+# Backup-Binary direkt auf dem Host (kein Docker mehr). Logs gehen ins systemd-Journal.
+ExecStart=/bin/bash -c 'cd "/discord" && exec /usr/local/bin/discord-backup --config config.json'
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
